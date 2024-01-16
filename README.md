@@ -36,6 +36,7 @@ Coordinate Reference System (CRS):
 -----------------------
 Metadata of input data
 -----------------------
+
 Land cover maps (LCM)
 	LCM 2015 at 1 km2
 		Contains the land cover classes as of 2015
