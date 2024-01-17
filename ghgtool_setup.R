@@ -245,6 +245,7 @@ if(part4){
                    , 'spatialEco' 
                    , 'parallel'
                    , 'doParallel'
+                   , 'foreach'
                    , 'janitor')
   for(i in 1:length(packageList)){
     packageList[i] <- paste0("'", packageList[i], "'")
