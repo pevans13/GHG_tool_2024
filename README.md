@@ -114,18 +114,34 @@ Animal data
 		Native projection: EPSG:27700
 		Citations: ???
 
-	Beef cattle
+	Beef cattle (Cattle Tracing System [CTS] data)
 	Filename: 'BEEF_2020.csv'
 	Original data:
+		Source: Defra
+		Units: number of animals
+		Spatial resolution: 10 km2
+		Spatial extent: GB
+		Data collected: 2020
+		Date produced/ published: 2021
+		Native projection: EPSG:27700
+		Citations: ???
 	
-	Dairy cattle
+	Dairy cattle (CTS data)
 	Filename: 'DAIRY_2020.csv'
 	Original data:
+		Source: Defra
+		Units: number of animals
+		Spatial resolution: 10 km2
+		Spatial extent: GB
+		Data collected: 2020
+		Date produced/ published: 2021
+		Native projection: EPSG:27700
+		Citations: ???
 	
 -----------------------
 'ghgtool_setup.R' script
 -----------------------
-
+The 'ghgtool_setup.R' script is the first script run in the project. It is responsible for creating the architecture for the project, and for importing the data used as input to the model. It is also used for creating the 'proj_packages.R' script, which sets out the R packages that will be used in the rest of the project. 
 
 -----------------------
 Getting Started

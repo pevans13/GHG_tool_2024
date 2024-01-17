@@ -33,12 +33,10 @@ options(scipen = 6, digits = 4) # for non-scientific notation
 # remove objects
 rm(list = ls())
 
-#### 0 - local or not ####
+# #### 0 - local or not ####
 local <- T
 if(local){
-  dir.create(localPath <- "C:/Users/paueva/OneDrive - UKCEH/ghgtool2023/ghgtool2023v2"
-             , showWarnings = F, recursive = T)
-  setwd(localPath)
+  localPath <- getwd()
 }
 rm(local)
 
@@ -47,10 +45,10 @@ rm(local)
 ## here you can select parts which you would like to run
 ## To do this, change the right side of the relevant arrow to a 'T'
 ## ------------ ----- --------------  ##
-part1 <- F # create architecture
+part1 <- T # create architecture
 part2 <- T # create grid that will be used for the whole project
-part3 <- F # imports data from the original place they were stored
-part4 <- F # create an initial script that contains all the R packages required for the project
+part3 <- T # imports data from the original place they were stored
+part4 <- T # create an initial script that contains all the R packages required for the project
 
 #### 0 - load libraries ####
 library(raster)
@@ -91,7 +89,7 @@ if(part1){
 
 #### part 2 - create grid that will be used for the whole project ####
 if(part2){
-  #### 2b - grid ####
+  #### 2a - grid ####
   tic("creating grid")
   ## ------------ Notes --------------  ##
   ## A grid can be created from the a replicate raser grid based on the initial 
@@ -183,8 +181,9 @@ Data:
   sink(file = NULL)
 }
 
+#### part 3 - imports data from the original place they were stored ####
 if(part3){
-  #### 2c - land cover ####
+  #### 3a - land cover ####
   tic("loaded land cover")
   
   # copy the 1 km resolution land cover
@@ -198,12 +197,12 @@ if(part3){
             , "data_in/land_cover/")
   toc()
   
-  #### 2d - Crops ####
+  #### 3b - Crops ####
   cat("copyng crops...\n")
   file.copy("N:\\Data\\UK\\Land_cover/LCMPlusCrops/LCM2015Pluscrops/LCM2015PlusCrops.tif"
             , "data_in/land_cover/")
   
-  #### 2e - animals ####
+  #### 3c - animals ####
   # agcensus - numeric
   agList <- list.files("N:\\Data\\UK\\agcensus/", pattern = "agcensus_5km"
                        , full.names = T)
@@ -220,7 +219,7 @@ if(part3){
             , "data_in/animals/")
   file.copy("N:/Data/UK/CTS/DAIRY_2020.csv"
             , "data_in/animals/")
-}
+  }
 
 if(part4){
   #### 4 - create project packages folder (proj_packages.R) ####
