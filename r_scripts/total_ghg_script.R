@@ -2865,7 +2865,7 @@ if(part5ManureManagement){
 
 if(part6excretions){
   
-  stop("part 6")
+  # stop("part 6")
   
   # set input location
   currPath <- file.path("./data_in", "animals")
@@ -3189,6 +3189,7 @@ if(part6excretions){
   excreteNcombined <- bind_rows(NexcreteCows
                                 , NexcreteNoBovine) 
   head(excreteNcombined)
+  table(excreteNcombined$UK.Region)
   
   # get means for all of the same animal, category
   summariseN <- excreteNcombined %>%
@@ -3446,7 +3447,7 @@ if(part6excretions){
     
     # use region to extract from over all grid
     regionGrid <- animalGrid %>% st_drop_geometry() %>%
-      filter(region == currRegion)
+      filter(region == x)
     
     # use the same information for the N excrete grid, but add 'All' as well
     regionN <- excreteNcombined %>% 
@@ -3461,7 +3462,10 @@ if(part6excretions){
     # ensure colnames of the grid and row names of the N amounts match
     ## ensure that across and down are in the same positions,
     ## otherwise change their positions
-    if(identical(c(names(regionGrid)[2:(ncol(regionGrid)-1)]) , c(regionN$animal))){
+    if(identical(
+      sort(c(names(regionGrid)[3:(ncol(regionGrid))]))
+      , sort(c(regionN$animal))
+    )){
       regionalMix <- regionN
       cat("all names match\n")
       
@@ -3557,3 +3561,1178 @@ if(part6excretions){
 
 # tidy
 rm(DEinside, DEoutside)
+
+#### 7 - part7fertiliserUse ####
+if(part7fertiliserUse){
+  
+  # set input location - for land cover
+  currPath <- file.path("./data_in", "land_cover")
+  # for crops
+  CropPath <- "./data_in/crops"
+  # set output location
+  savePath <- file.path("./results", "arable")
+  
+  # import GE 1 km2 crop area for 2015
+  cropArea <- st_read(file.path(currPath, "land_cover_table.gpkg"))
+  head(cropArea)
+  
+  ##### 7a - Determine pH, and thus how much lime may be needed #####
+  ## ------------ Notes --------------  ##
+  ## pH and other soil data come from the P drive, which contains data from 
+  ## Cranfield
+  ## ------------ ----- --------------  ##
+  
+  # list the soil data
+  # should inlcude: pH, silt, sand, and clay content, and OC.
+  soils <- list.files("P:/NEC07065_AGLAND/WP1/SpatialData/Soils_1km/"
+                      , pattern = ".tif$", full.names = T)
+  cat(basename(soils), sep = "\n")
+  # combine to a df
+  soils <- rast(lapply(soils, rast))
+  print(soils)
+  soils <- as.data.frame(soils, xy = T)
+  soils <- soils[complete.cases(soils$Soil_TopsoilClayContent_1k), ]
+  head(soils)
+  # save
+  fwrite(soils, "data_in/crops/soil_data.csv", row.names = F)
+  
+  # read as point data
+  soils <- st_as_sf(soils, coords = c("x", "y"), crs = crs(27700))
+  st_crs(soils) <- 27700
+  
+  # combine with crop area
+  cropSoils <- st_join(cropArea, soils)
+  
+  # calculate possible lime added per hectare based on Table 1.2 in RB209
+  # this makes the assumption that farmers are going for optimal yield
+  
+  # determine what type of soil it is: sandy, silty, clayey
+  # base this on the highest proportion in the soil's composition
+  soils$soilTyp <- ifelse(soils$Soil_TopsoilSandContent_1k > soils$Soil_TopsoilSiltContent_1k 
+                          & soils$Soil_TopsoilSandContent_1k > soils$Soil_TopsoilClayContent_1k
+                          , "Sand"
+                          , ifelse(soils$Soil_TopsoilSiltContent_1k > soils$Soil_TopsoilSandContent_1k & soils$Soil_TopsoilSiltContent_1k > soils$Soil_TopsoilClayContent_1k
+                                   , "Silt", "Clay"))
+  head(soils)
+  
+  # save
+  st_write(soils, file.path("data_in", "crops", "soils.gpkg"), append = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path("data_in", "crops", "readme_soils.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+  Date created: 2023-06-05
+  Last update:",  format(Sys.Date()), "
+  
+  Description of 'soils.gpkg':
+  Contains soil information at 1 km
+  
+  Columns of 'soils.gpkg':
+    'Soil_Topsoil[type]Content_1k' = percentage of a soil type in the 1 km2
+      'type' = either 'sand', 'silt', or 'clay' 
+    'Soil_TopsoilKFactor_1k' = soil erodibility factor
+    'Soil_TopsoilOrganicCarbonContent_1k' = percentage of carbon content in soil
+    'Soil_TopsoilPH_1k' = pH of soil
+    'soilTyp' = the type of soil each km is considered to be based on which of the substrates was highest in the clay, silt, or sand columns
+    
+  Data: soil data
+  units: see above
+  Spatial resolution: 1 km2
+  Spatial extent: UK
+  Temporal coverage: 2015
+  Native projection: 27700")
+  sink(file = NULL)
+  
+  ## ------------ Notes --------------  ##
+  ## From RB209: 'For each field, the amount of lime to apply will depend on the current soil pH,
+  ## soil texture, soil organic matter and the target pH, which should be 0.2 pH points above optimum'
+  ## Therefore, Table 1.2 in RB209 was used to determine how much lime would be applied
+  ## ------------ ----- --------------  ##
+  
+  # calculate lime requirements, in t/ha, for arable and arable
+  ## for sand
+  limeReqsSand <- soils %>%
+    filter(soilTyp == "Sand") %>%
+    # calculate based on starting pH
+    mutate(limeReq_tha_arab = if_else(Soil_TopsoilPH_1k <= 5, 10
+                                      , if_else(Soil_TopsoilPH_1k <= 5.5, 7
+                                                , if_else(Soil_TopsoilPH_1k <= 6.0, 4
+                                                          , if_else(Soil_TopsoilPH_1k <= 6.2, 3, 0))))
+           , limeReq_tha_gras = if_else(Soil_TopsoilPH_1k <= 5, 5
+                                        , if_else(Soil_TopsoilPH_1k <= 5.5, 3
+                                                  , if_else(Soil_TopsoilPH_1k <= 6.0, 0
+                                                            , if_else(Soil_TopsoilPH_1k <= 6.2, 0, 0)))))
+  
+  # for silt
+  limeReqsSilt <- soils %>%
+    filter(soilTyp == "Silt") %>%
+    # calculate based on starting pH
+    mutate(limeReq_tha_arab = if_else(Soil_TopsoilPH_1k <= 5, 12
+                                      , if_else(Soil_TopsoilPH_1k <= 5.5, 8
+                                                , if_else(Soil_TopsoilPH_1k <= 6.0, 5
+                                                          , if_else(Soil_TopsoilPH_1k <= 6.2, 4, 0))))
+           , limeReq_tha_gras = if_else(Soil_TopsoilPH_1k <= 5, 6
+                                        , if_else(Soil_TopsoilPH_1k <= 5.5, 4
+                                                  , if_else(Soil_TopsoilPH_1k <= 6.0, 0
+                                                            , if_else(Soil_TopsoilPH_1k <= 6.2, 0, 0)))))
+  # for clay
+  limeReqsClay <- soils %>%
+    filter(soilTyp == "Clay") %>%
+    # calculate based on starting pH
+    mutate(limeReq_tha_arab = if_else(Soil_TopsoilPH_1k <= 5, 14
+                                      , if_else(Soil_TopsoilPH_1k <= 5.5, 10
+                                                , if_else(Soil_TopsoilPH_1k <= 6.0, 6
+                                                          , if_else(Soil_TopsoilPH_1k <= 6.2, 4, 0))))
+           , limeReq_tha_gras = if_else(Soil_TopsoilPH_1k <= 5, 7
+                                        , if_else(Soil_TopsoilPH_1k <= 5.5, 4
+                                                  , if_else(Soil_TopsoilPH_1k <= 6.0, 0
+                                                            , if_else(Soil_TopsoilPH_1k <= 6.2, 0, 0)))))
+  
+  # combine - this shows tonnes of lime required per ha based on soil pH
+  limeReqs <- rbind(limeReqsSand, limeReqsSilt, limeReqsClay)
+  head(limeReqs)
+  # tidy
+  rm(limeReqsSand, limeReqsSilt, limeReqsClay)
+  
+  # limeRegs are in t/ha, so determine amount for km2 depending on arable and grass areas
+  limeReqsAmounts <- cropArea %>% dplyr::select(rcFid_1km, winterwheat_ha:sugarbeet_ha, improved_grass_ha) %>%
+    st_drop_geometry() %>%
+    # get total arable area
+    mutate(total_arab_ha = rowSums(dplyr::select(., c(winterwheat_ha:sugarbeet_ha)))) %>%
+    mutate(total_arab_ha = ifelse(is.na(total_arab_ha), 0, total_arab_ha)) %>%
+    rename(total_grass_ha = improved_grass_ha) %>%
+    dplyr::select(rcFid_1km, total_arab_ha, total_grass_ha) %>%
+    # make spatial again
+    merge(cropArea[, "rcFid_1km"], .) %>%
+    # join with advised lime amounts
+    st_join(., limeReqs %>% dplyr::select(soilTyp:limeReq_tha_gras)) %>%
+    # multiply arable cover (in hectares) by amount of lime per ha
+    mutate(limeAmount_tonnes_arab = total_arab_ha * limeReq_tha_arab
+           # and do the same for grass
+           , limeAmount_tonnes_gras = total_grass_ha * limeReq_tha_gras
+           # and add them
+           , limeAmount_tonnes = limeAmount_tonnes_arab + limeAmount_tonnes_gras) %>%
+    filter(!is.na(soilTyp))
+  head(limeReqsAmounts)
+  
+  # calculate the emissions from lime adage
+  # https://naei.beis.gov.uk/data/ef-all-results?q=184177 states that the emission factor for limestone is 0.12 t CO2e t−1
+  limeReqsAmounts$limeTco2e <- limeReqsAmounts$limeAmount_tonnes * 0.12
+  head(limeReqsAmounts)
+
+  # save
+  st_write(limeReqsAmounts, file.path(savePath, "liming_eval.gpkg"), append = F)
+  fwrite(st_drop_geometry(limeReqsAmounts), file.path(savePath, "liming_eval.csv"), row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(savePath, "readme_liming_eval.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+  Date created: 2023-06-06
+  Last update:",  format(Sys.Date()), "
+  
+  Description of 'liming_eval.csv':
+  This file contains information about about quanitity of lime used in agriculture, and its emissions. 
+
+  Columns of 'liming_eval.csv':
+    'rcFid_1km' = grid reference of that cell (x and y coordinates of the centroid point separated by a'-')
+    'total_[landtype]_ha' = area, in ha, of either arable land 'arab' or grassland 'grass'
+    'soilTyp' = the type of soil each km is considered to be based on which of the substrates was highest in the clay, silt, or sand 
+    'limeReq_tha_[landtype]' = tonnes per ha of limestone required for landtype to make the soil more alkaline. This is based on RB209 recommendations
+    'limeAmount_tonnes_[landtype]' = tonnes per km2 of limestone required for landtype to make the soil more alkaline 
+    'limeAmount_tonnes' = tonnes per km2 of limestone required for both landtypes (arable and grassland) to make the soil more alkaline 
+    'limeTco2e' = tonnes of CO2e emissions produced by application of limestone
+    
+  Data: quantity of limestone emissions and the emissions
+  units: see above
+  Spatial resolution: 1 km2
+  Spatial extent: UK
+  Temporal coverage: 2015
+  Native projection: 27700")
+  
+  sink(file = NULL)
+  
+  #### 7b. determine rainfall, crop type, and Soil Nitrogen Supply (SNS) ####
+  ## ------------ Notes --------------  ##
+  ## According to RB209, the amount of fertiliser used is dependent on the rainfall amount, 
+  ## the previous crop type, and the Soil Nitrogen Supply (SNS)
+  ## The steps it recommends are:
+  ##  A. Identify the soil category for the field
+  ##  B. Identify the previous crop
+  ##  C. Select the rainfall range for the field
+  ##  D. Identify the provisional SNS Index using the appropriate table
+  ## These steps will be followed to create a table to indicate the fertiliser to be used
+  ## ------------ ----- --------------  ##
+  
+  ##### 7b1. Identify the soil category for the field #####
+  ## ------------ Notes --------------  ##
+  ## The soil type was determined in the 'soils' df above, giving the soil type as 'sand', 'silt', or 'clay'
+  ## ------------ ----- --------------  ##
+  
+  ##### 7b2. Identify the previous crop #####
+  ## ------------ Notes --------------  ##
+  ## It is assumed that the previous crop will stay the same as the current one
+  ## ------------ ----- --------------  ##
+  
+  ##### 7b3. Select the rainfall range for the field #####
+  ## ------------ Notes --------------  ##
+  ## RB209 state "‘low rainfall’ (annual rainfall less than 600 mm ...),
+  ## ‘moderate rainfall’ (between 600–700 mm annual rainfall ...), and
+  ## ‘high rainfall’ (over 700 mm annual rainfall ...).
+  
+  # create a rainfall grid from 2012 - 2017 precip data. Use the 'all_mean' data
+  rainExtract <- raster("N:/Data/UK/chessmet/precipitation/year_sum_averageikm.tif") %>%
+    # convert to df
+    as.data.frame(xy=T) %>%
+    # using the info on Step 3 from RB209 (pg 9), put rain into three categories
+    mutate(rainCat = if_else(layer < 600, "low"
+                             , if_else(layer <= 700, "moderate"
+                                       , "high")))
+  
+  ##### 7b4. Identify the provisional SNS Index using the appropriate table #####
+  ## ------------ Notes --------------  ##
+  ## To determine SNS, soil, rainfall, and previous crop need to be combined to use Tables 4.2 - 4.4 in RB209
+  ## also need depth - derived using root depth
+  ## ------------ ----- --------------  ##
+  
+  # separate centroid points of the soil data
+  separatedSoils <- soils %>%
+    mutate(X = as.integer(unlist(map(soils$geometry,1))),
+           Y = as.integer(unlist(map(soils$geometry,2)))) %>%
+    dplyr::select(X, Y, soilTyp) %>%
+    # merge with rain
+    merge(., rainExtract %>% 
+            mutate(X = as.integer(x), Y = as.integer(y)) %>%
+            dplyr::select(X, Y, rainCat))
+  
+  ## require root depth - data converted from EU scale
+  rootDepthUK <- rast(file.path("data_in/crops", "rootdepthuk.tif")) %>%
+    # convert to df
+    as.data.frame(xy=T) %>%
+    # merge with rainfall data
+    merge(separatedSoils, .
+          , by.x = c("X", "Y")
+          , by.y = c("x", "y")
+          , all = F) %>%
+    # determine RB209 rooting depth category
+    mutate(depthRB209 = if_else(soilTyp %in% c("Sand", "Silt") & rootdepthuk > 100, "Deep"
+                                , if_else(soilTyp == "Clay" & rootdepthuk > 40, "Deep" 
+                                          , if_else(rootdepthuk < 40, "Shallow", "Medium"))))
+  head(rootDepthUK)
+  
+  # adjust crop data
+  cropSoils <- cropSoils %>%
+    st_centroid()
+  cropSoils <- cropSoils %>%
+    mutate(X = as.integer(unlist(map(cropSoils$geom, 1))),
+           Y = as.integer(unlist(map(cropSoils$geom, 2))))
+  head(cropSoils)
+  
+  # merge with crop data
+  cropSoilRain <- rootDepthUK %>%
+    merge(., cropSoils %>% st_drop_geometry() %>% dplyr::select(rcFid_1km:improved_grass_ha, X, Y)
+          , by = c("X", "Y"), all = T) %>%
+    filter(!is.na(rcFid_1km)) %>%
+    filter(!is.na(soilTyp))
+  
+  # concatenate the three categories
+  cropSoilRain$snsCats <- paste(cropSoilRain$rainCat
+                                , cropSoilRain$soilTyp
+                                , cropSoilRain$depthRB209
+                                , sep = "_") 
+  head(cropSoilRain)
+  
+  ## ------------ Notes --------------  ##
+  ## The purpose of the next bit of code is to derive the exact values for SNS
+  ## from the literature. Two tables will be created 'empty' and will then be
+  ## filled in manually and loaded back in
+  ## ------------ ----- --------------  ##
+  
+  ## this code either reads in or creates the initial table ##
+  if(file.exists(file.path(CropPath, "snsTableCompleted.csv"))){
+    # read in and then replicate all cereals for the cereal types
+    snsParameters <- fread(file.path(CropPath, "snsTableCompleted.csv"))
+    snsCereals <- snsParameters %>%
+      filter(crop_type == "cereal")
+    # get nrow
+    nrowCereal <- nrow(snsCereals)
+    snsCereals <- do.call("rbind", replicate(5, snsCereals, simplify = FALSE))
+    snsCereals$crop <- c(rep(c("maize"), nrowCereal)
+                         , rep(c("winterwheat"), nrowCereal)
+                         , rep(c("winterbarley"), nrowCereal)
+                         , rep(c("springwheat"), nrowCereal)
+                         , rep(c("springbarley"), nrowCereal)) 
+    snsCereals <- snsCereals %>%
+      dplyr::select(-"crop_type") %>%
+      rename(crop_type = crop) %>%
+      relocate(threeParas, crop_type, sns_category)
+    # add back to original
+    snsParameters <- rbind(snsParameters %>%
+                             filter(crop_type != "cereal")
+                           , snsCereals)
+  } else {
+    # create a table from the unique crop and categories
+    ## unique RB209 categories
+    uniqueRb209Crops <- c("beans", "cereal" # cereal crops are maize + winterwheat + winterbarley + springwheat + springbarley
+                          , "forage" # forage crops are oats 
+                          , "osr", "potatoes", "sugarbeet"
+                          , "uncropped") # uncropped is 'improved grassland' 
+    snsParameters <- cbind(threeParas = rep(unique(cropSoilRain$snsCats), length(uniqueRb209Crops))
+                           , crop_type = uniqueRb209Crops) %>% as.data.frame()
+    fwrite(snsParameters, file.path(CropPath, "snsTableEmpty.csv"), row.names = F)
+  }
+  head(snsParameters)
+  
+  ## this code either reads in or creates the initial sns crop table ##
+  if(file.exists(file.path(CropPath, "snsCropTableCompleted.csv"))){
+    snsCropParameters <- fread(file.path(CropPath, "snsCropTableCompleted.csv"))
+  } else {
+    # create a table from the unique crop and categories
+    ## unique RB209 categories
+    uniqueRb209Crops <- c("beans", "maize", "winterwheat", "winterbarley", "springwheat", "springbarley"
+                          , "forage" # forage crops are oats 
+                          , "osr", "potatoes", "sugarbeet"
+                          , "uncropped") # uncropped is lc_401 'imporved grassland' 
+    snsCropParameters <- cbind(threeParas = rep(unique(cropSoilRain$snsCats), length(uniqueRb209Crops))
+                               , crop_type = uniqueRb209Crops
+                               , sns0 = 0
+                               , sns1 = 1
+                               , sns2 = 2
+                               , sns3 = 3) %>% as.data.frame()
+    fwrite(snsCropParameters, file.path(CropPath, "snsCropTableEmpty.csv"), row.names = F)
+  }
+  head(snsCropParameters)
+  
+  # make tables wide
+  snsParasWide <- snsParameters %>%
+    tidyr::pivot_wider(names_from = crop_type, values_from = sns_category)
+  colnames(snsParasWide)[2:ncol(snsParasWide)] <- paste0("sns_", colnames(snsParasWide)[2:ncol(snsParasWide)])
+  head(snsParasWide)
+  # sns parameters
+  snsCropParametersWide <- snsCropParameters %>%
+    dplyr::select(-ref) %>%
+    tidyr::pivot_wider(names_from = crop_type, values_from = c(sns0, sns1, sns2, sns3)) %>%
+    rename_at(vars(-(1)), ~ paste0(., '_kgHa'))
+  head(snsCropParametersWide)
+  
+  # merge to make spatial
+  snsParasWide2 <- snsParasWide %>%
+    merge(., cropSoilRain
+          , by.x = "threeParas"
+          , by.y = "snsCats"
+          , all = T) %>%
+    dplyr::select(-c(soilTyp, rainCat, rootdepthuk, depthRB209)) %>%
+    relocate(threeParas, X, Y, rcFid_1km
+             # couple others
+             , sns_forage, oats_ha
+             , sns_sugarbeet, sugarbeet_ha
+             
+             # cereals
+             , sns_maize, maize_ha
+             , sns_winterwheat, winterwheat_ha
+             , sns_winterbarley, winterbarley_ha
+             , sns_springwheat, springwheat_ha
+             , sns_springbarley, springbarley_ha
+             
+             , sns_potatoes, potato_ha
+             , sns_beans, fieldbeans_ha
+             , sns_osr, rapeseed_ha
+             , sns_uncropped, improved_grass_ha) 
+  head(snsParasWide2)
+  
+  # use matrix calculations - just areas
+  snsMat1 <- snsParasWide2 %>%
+    st_drop_geometry() %>%
+    dplyr::select(oats_ha
+                  , sugarbeet_ha
+                  , maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha
+                  , potato_ha
+                  , fieldbeans_ha
+                  , rapeseed_ha
+                  , improved_grass_ha) %>%
+    as.matrix()
+  head(snsMat1)
+  
+  ## just sns categories
+  snsMat2 <- snsParasWide2 %>%
+    st_drop_geometry() %>%
+    dplyr::select(sns_forage
+                  , sns_sugarbeet
+                  , sns_maize, sns_winterwheat, sns_winterbarley, sns_springwheat, sns_springbarley
+                  , sns_potatoes
+                  , sns_beans
+                  , sns_osr
+                  , sns_uncropped) %>%
+    as.matrix()
+  head(snsMat2)
+  
+  ## ------------ Notes --------------  ##
+  ## the below code determines how much SNS is necessary for each pixel by 
+  ## using the crop area and its SNS class
+  ## ------------ ----- --------------  ##
+  
+  # loop through sns categories
+  m3 <- list()
+  for(i in 0:3){
+    if(i == 0){
+      v = 1
+    } else {
+      v = v+1
+    }
+    
+    print(i)
+    nm <- paste0("sns", i, "_")
+    
+    # new instance
+    snsNew <- snsMat2
+    print(head(snsNew))
+    # make 1 or 0
+    M <- ifelse(snsNew==i,1,0)
+    print(head(M))
+    
+    # multiply by the area
+    print(head(snsMat1))
+    m2 <- M * snsMat1
+    print(head(m2))
+    
+    # sum the rows
+    m3[[v]] <- m2 %>%
+      as.data.frame() 
+    colnames(m3[[v]]) <- paste0(nm, gsub("sns_", "", colnames(m3[[v]])))
+    print(head(m3[[v]]))
+  }
+  
+  # bind back together
+  snsParasWide3 <- do.call(cbind, list(snsParasWide2, m3)) %>% as.data.frame() %>%
+    # merge back to spatial
+    merge(cropSoilRain %>% dplyr::select(rcFid_1km), .)
+  head(snsParasWide3)
+  # save 
+  st_write(snsParasWide3, file.path(CropPath, "sns_and_crops.gpkg"), append = F)
+  fwrite(st_drop_geometry(snsParasWide3), file.path(CropPath, "sns_and_crops.csv")
+         , row.names = F)
+  
+  # and with the derived SNS values
+  snsParas <- merge(snsParasWide3, snsCropParametersWide 
+                    , by = "threeParas"
+                    , all = T) %>%
+    dplyr::select(-c(contains(c("sns_"))))
+  head(snsParas)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(CropPath, "readme_sns_and_crops.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+   Date created: 2023-05-05
+   Last update:",  format(Sys.Date()), "
+   
+   Description of 'sns_and_crops':
+   These files contain the amount of soil nitrogen supply (SNS) required for a pixel, based on RB209 recommendations and different crop and soil types
+   
+   Columns of 'sns_and_crops':
+    'rcFid_1km' = grid reference of that cell (x and y coordinates of the centroid point separated by a'-')
+    'threeParas' = type of km relevant for crop growing, separated by '_', in the order of '[rainfall]_[soil type]_[rootdepth]'
+        [rainfall] = 'low', 'medium', or 'high', coresponding to annual rainfall of <600 mm, 600 mm - 700 mm, > 700 mm, respectively
+        [soil type] = 'clay', 'silt', or 'sand', based on which was most numerous within a pixel
+        [rootdepth] = 'deep', 'medium', or 'shallow' based on RB209 definitions, which took soil type into account
+    'X' and  'Y' = x and y coordinates for the centroid point, with an EPSG of 27700
+    '[crop_type]_ha' = area, in ha, of that crop type within a 1 km2 cell
+    'sns[x]_[crop_type]' = the area of each SNS category 'x' required, in ha, for a certain crop type
+    'sns[x]_[crop_type]_kgHa' = the quantity, in kg per ha, of N required to meet each  SNS category 'x' requirement, for a certain crop type
+    
+   Data: soil nitrogen supply (SNS)
+   units: hectare, or kg N / ha
+   Spatial resolution: 1 km2
+   Spatial extent: UK
+   Temporal coverage: 2015
+   Native projection: 27700")
+  
+  sink(file = NULL)
+  
+  # get all unique names
+  startCol <- which(colnames(snsParas) == "sns0_forage")
+  endCol <- which(colnames(snsParas) == "sns3_uncropped")
+  xCurr <- list()
+  for(i in startCol:endCol){
+    
+    cat(i, nm <- colnames(snsParas)[i], "\n")
+    nmKg <- paste0(nm, "_kgN")
+    
+    # select only columns that match
+    # multiple the amount of N suggested to be applied with the amount of hectares of
+    # that crop type
+    xCurr[[i]] <- snsParas %>%
+      st_drop_geometry() %>%
+      dplyr::select(rcFid_1km, contains(nm)) %>%
+      mutate(total = .[, 2] * .[, 3]) %>%
+      dplyr::select(rcFid_1km, total) %>%
+      rename(!!nmKg := total)
+  }
+  xCurr <- Filter(length, xCurr) # only get filled objects
+  
+  # merge all together
+  snsParasKgN <- Reduce(function(x, y) merge(x, y, by = "rcFid_1km", all = TRUE),
+                        xCurr) %>%
+    # get total
+    mutate(totalNperKm = rowSums(select(., 2:last_col()), na.rm = T)) %>%
+    # merge back to spatial
+    merge(cropSoilRain %>% dplyr::select(X, Y, rcFid_1km), .)
+  head(snsParasKgN)
+  
+  # load in manure amounts, and the N you get from it, and reduce from fertiliser cost
+  kgNmanure <- st_read(file.path("results", "animals", "spatialN1km_kgN.gpkg"))
+  head(kgNmanure)
+  snsParasKgNman <- snsParasKgN %>%
+    st_join(., kgNmanure %>% dplyr::select(-rcFid_1km)) %>%
+    rename(kgN_fromManure = totalN
+           , kgNreq_fromFert = totalNperKm)
+  head(snsParasKgNman)
+  ## get total N added by fertiliser (after removing N obtained from manure)
+  snsParasKgNman <- snsParasKgNman %>%
+    mutate(finalkgNfert = kgNreq_fromFert - kgN_fromManure) %>%
+    mutate(finalkgNfert = ifelse(finalkgNfert < 0, 0, finalkgNfert))
+  head(snsParasKgNman)
+  
+  # write
+  st_write(snsParasKgNman, file.path(CropPath, "KgNapplied_fert.gpkg"), append = F)
+  fwrite(snsParasKgNman %>% st_drop_geometry(), file.path(CropPath, "KgNapplied_fert.csv"), row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(CropPath, "readme_KgNapplied_fert.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+   Date created: 2023-05-05
+   Last update:",  format(Sys.Date()), "
+   
+   Description of 'KgNapplied_fert':
+   These files contain the amount of soil nitrogen supply (SNS) required for a pixel for each agricultural land type, based on RB209 recommendations and different crop and soil types. It also includes N produced in that km by manure management. 
+   
+   Columns of 'KgNapplied_fert':
+    'rcFid_1km' = grid reference of that cell (x and y coordinates of the centroid point separated by a'-')
+    'X' and  'Y' = x and y coordinates for the centroid point, with an EPSG of 27700
+    'sns[x]_[crop_type]_kgN' = the amount of N, in kg, for each SNS category 'x' required for a certain crop type
+    'kgNreq_fromFert' = the quantity, in kg, of N required to meet each  SNS category 'x' requirement, for all crop types
+    'kgN_fromManure' = the amount of N, in kg, produced from manure management in that km cell
+    'finalkgNfert' = the final amount of N, in kg, required from fertilisers, after removing the N received from manure
+    
+   Data: soil nitrogen supply (SNS)
+   units: kg N per km2
+   Spatial resolution: 1 km2
+   Spatial extent: UK
+   Temporal coverage: 2015
+   Native projection: 27700")
+  
+  sink(file = NULL)
+  
+  # check how the data fit with national averages
+  # Fertiliser usage on farms: Results from the Farm Business Survey,
+  # England 2019/20 state that 109 is the average kg N ha-1
+  
+  #### 7c - determine emissions factors for fertiliser use ####
+  rm(list=setdiff(ls(), c("CropPath", "savePath", "snsParasKgNman", "cropSoilRain", "soils")))
+  
+  ## ------------ Notes --------------  ##
+  ## To calculate emissions from fertilisers, several bits of information are required:
+  ## soil texture
+  ## Drainage
+  ## pH
+  ## soil  moisture
+  ## CEC
+  ## SOC
+  ## application method
+  ## fertiliser type
+  ## application rate
+  ## crop type
+  
+  ## these need to be incorporated and derived per cell
+  ## ------------ ----- --------------  ##
+  
+  ##### 7c1 - soil texture #####
+  ## ------------ Notes --------------  ##
+  ## there are three categories for soil texture: 'fine', 'medium', or 'course'
+  ## this will be based on the soil type that that cell was assigned to
+  ## ------------ ----- --------------  ##
+  fertiliserFactors <- cropSoilRain %>%
+    dplyr::select(rcFid_1km, soilTyp) %>%
+    # add soil texture 
+    # create list
+    mutate(textureCat = if_else(soilTyp == "Sand", "fine"
+                                , if_else(soilTyp == "Silt", "medium", "course")))
+  # match with the coefficients
+  textureCoefs <- c(fine = c(0,0,0)
+                    , medium = c(-0.472, 0, 0)
+                    , course = c(-0.008, 0, 0))
+  
+  ##### 7c2 - drainage #####
+  ## ------------ Notes --------------  ##
+  ## there are two categories, but no data, therefore drainage was presumed to be
+  # in between both, which gave values of -0.21, 0.473, 0
+  ## ------------ ----- --------------  ##
+  drainageCoefs <- c(-0.21, 0.473, 0)
+  
+  ##### 7c3 - pH #####
+  ## ------------ Notes --------------  ##
+  ## pH can be derived from the soil dataframe
+  ## ------------ ----- --------------  ##
+  fertiliserFactors <- fertiliserFactors %>%
+    st_join(soils) %>%
+    dplyr::select(rcFid_1km, textureCat, Soil_TopsoilPH_1k
+                  , Soil_TopsoilClayContent_1k, Soil_TopsoilOrganicCarbonContent_1k) %>%
+    # add soil texture 
+    # create list
+    mutate(phCat = if_else(Soil_TopsoilPH_1k <= 5.5, "low pH"
+                           , if_else(Soil_TopsoilPH_1k <= 7.3, "low-mod pH"
+                                     , if_else(Soil_TopsoilPH_1k <= 8.5, "high-mod pH", "high pH"))))
+  
+  # get the coefficients from Table 2.4 in CFT
+  phCoefs <- c(low_ph = c(0,0,-1.072)
+               , low_modph = c(0.109,0,-0.933)
+               , high_modph = c(-0.352,0,-0.608)
+               , highph = c(-0.352, 0, 0))
+  
+  ##### 7c4 - soil moisture #####
+  ## ------------ Notes --------------  ##
+  ## there are data for soil moisture - from Copernicus
+  ## ------------ ----- --------------  ##
+  # load soil moisture data
+  sm <- raster("N:/Data/UK/soil/soil_moisture/yearmean15_20.tif")
+  sm <- as.data.frame(sm, xy = T)
+  # there are two categories for soil moisture in CFT: moist and dry
+  # assuming that half of england fits both these categories, the mean will decide which is which
+  moistDryMean <- mean(sm$yearmean15_20, na.rm = T)
+  moistDryCat <- sm %>% 
+    mutate(moistDryCat = if_else(yearmean15_20 <= moistDryMean, "dry", "moist")) %>%
+    select(yearmean15_20, moistDryCat, x, y)
+  
+  fertiliserFactors <- fertiliserFactors %>%
+    mutate(X = as.integer(unlist(map(fertiliserFactors$geom, 1))),
+           Y = as.integer(unlist(map(fertiliserFactors$geom, 2)))) %>%
+    merge(., moistDryCat, by.x = c("X", "Y")
+          , by.y = c("x", "y")
+          , all = F)
+  head(fertiliserFactors)
+  
+  ##### 7c4 - CEC #####
+  ## ------------ Notes --------------  ##
+  ## Cation-exchange capacity (CEC) is a measure of how many cations can be retained on soil particle surfaces
+  ## this cannot be changed. It corresponds to ## the total capacity of a material to hold exchangeable cations
+  ## measured in centimoles of charge per kilogram of exchanger (cmol(+)/kg).
+  ## according to https://www.soilquality.org.au/factsheets/cation-exchange-capacity,
+  ## sand has low cec (~2), while organic matter can range from 250 - 400 
+  ## requires: pH, bulk density, SOC, and clay content of soil
+  ## ------------ ----- --------------  ##
+  
+  # bulk density not available, so all soil was given a medium rating of 1.3 g g-3
+  fertiliserFactors$BD <- 1.3
+  
+  # convert soil clay to 1 of 3 categories - Fine: 0.6, Medium: 0.3, Coarse: 0.15
+  # divide by 100 to get proportion
+  soilClayCEC <- fertiliserFactors %>%
+    mutate(soilClayCEC = if_else(Soil_TopsoilClayContent_1k/100 >= 0.6, 0.6
+                                 , if_else(Soil_TopsoilClayContent_1k/100 <= 0.15, 0.15, 
+                                           0.3))) %>%
+    dplyr::select(rcFid_1km, Soil_TopsoilClayContent_1k, soilClayCEC)
+  table(as.vector(soilClayCEC$soilClayCEC))
+  
+  # calculate CEC based on equation 2.3.5 in CFT
+  fertiliserFactors$cec <- (51 * fertiliserFactors$Soil_TopsoilPH_1k - 59) * fertiliserFactors$Soil_TopsoilOrganicCarbonContent_1k/3000000/fertiliserFactors$BD +
+    (30 + 4.4 * fertiliserFactors$Soil_TopsoilPH_1k) * soilClayCEC$soilClayCEC
+  min(fertiliserFactors$cec, na.rm = T)
+  max(fertiliserFactors$cec, na.rm = T) # quite a bit lower than maximum of 250 - 400
+  head(fertiliserFactors)
+  # place resulting data into 1 of 4 categories
+  fertiliserFactors <- fertiliserFactors %>% 
+    mutate(cecCat = if_else(cec <= 16, "low CEC"
+                            , if_else(cec <= 24, "low-mod CEC"
+                                      , if_else(cec <= 32, "high-mod CEC", "high CEC"))))
+  table(as.vector(fertiliserFactors$cecCat))
+  # get the coefficients from Table 2.4 in CFT
+  cecCoefs <- c(low_CEC = c(0,0,0.088)
+                , low_modCEC = c(0,0,0.012)
+                , high_modCEC = c(0,0,0.163)
+                , highCEC = c(0, 0, 0))
+  
+  ##### 7c5 - SOC #####
+  ## ------------ Notes --------------  ##
+  ## data are available for this
+  ## ------------ ----- --------------  ##
+  fertiliserFactors <- fertiliserFactors %>% 
+    mutate(socCat = if_else(Soil_TopsoilOrganicCarbonContent_1k < 1, "soc_1"
+                            , if_else(Soil_TopsoilOrganicCarbonContent_1k <= 3, "soc_1_3"
+                                      , if_else(Soil_TopsoilOrganicCarbonContent_1k <= 6, "soc_3_6", "soc_6"))))
+  table(as.vector(fertiliserFactors$socCat))
+  # get the coefficients from Table 2.4 in CFT
+  socCoefs <- c(soc_1 = c(0,0,0)
+                , soc_1_3 = c(0.14, 0, 0)
+                , soc_3_6 = c(0.58, 2.571, 0)
+                , soc_6 = c(1.045, 2.571, 0))
+  
+  ##### 7c6 - application method #####
+  ## ------------ Notes --------------  ##
+  ## only affects NH3 emissions
+  ## there are 6 options available, but the method is unknown, so an average
+  ## value just for NH3 emissions will be used
+  ## ------------ ----- --------------  ##
+  applMethodNH3 <- mean(c(-1.292, -1.305, -1.844, -2.465, -1.895))
+  
+  ##### 7c6 - fertiliser type #####
+  ## ------------ Notes --------------  ##
+  ## the fertiliser type adds different emissions
+  ## The type of fertiliser can change, and will be affected by a land 
+  ## manager's preference. Here, only three types are used, as they are recommended
+  ## in RB209. These are: Ammonium nitrate, urea, and Urea-ammonium nitrate liquid
+  
+  ## fertiliser type: based on Table 2.4 in CFT, urea ammonia nitrate solution has the 
+  ## same coefficients as ammonium nitrate (granulated); therefore, the two types of fertiliser
+  ## used for this will be urea ammonia nitrate solution, and urea - 46% N
+  ## ------------ ----- --------------  ##
+  
+  # get the coefficients from Table 2.4 in CFT
+  fertiliserCoefs <- c(nitrateSol = c(0.0053, 0.0004, 0)
+                       , urea = c(0.0051, 0.0061, 0.666))
+  
+  ##### 7c7 - application rate #####
+  ## ------------ Notes --------------  ##
+  ## the application rate is the amount of a fertiliser applied. This is provided
+  ## from the SNS tables produced earlier
+  ## ------------ ----- --------------  ##
+  
+  ##### 7c8 - crop type #####
+  ## ------------ Notes --------------  ##
+  ## using the crop types in Bouwman et al. (2002), the crops present in this study
+  ## can be split into three groups, namely grass (uncropped land), legumes (field beans)
+  ## and 'other upland' (barley, maize, oats, potato, wheat, sugarbeet, rapeseed)
+  ## ------------ ----- --------------  ##
+  
+  # get the coefficients from Table 1 in Bouwman et al. (2002)
+  cropTypeCoefs <- c(grass = c(-1.268, 0, -0.158)
+                     , legumes = c(-0.023, 0, -0.045)
+                     , other_upland = c(0, 0, -0.04))
+  
+  #### 7d - calculate emissions from fertiliser use ####
+  ## ------------ Notes --------------  ##
+  ## All the emissions factors noted in section 3 require to be summed together, following 
+  ## Bouwman et al. (2002). The way described above was the original way to
+  ## calculate it (i.e. found in the CFT), and is the focus of section '4A'
+  ## ------------ ----- --------------  ##
+  
+  ###### 7d1 - N2O background ######
+  # determine L_back_direct from eq. 2.3.3b in CFT
+  # these are termed as 'background N2O emissions' in CFT and
+  # are based on the emission factors from classes of:
+  # crop type, soil texture, soc, cec, pH, drainage, and application method
+  # note application method for N2O is 0, so can be ignored
+  
+  # load in crop area
+  cropArea <- st_read(file.path(CropPath, "sns_and_crops.gpkg")) %>%
+    dplyr::select(-c(rcFid_1km, X, Y)) %>%
+    st_join(fertiliserFactors)
+  head(cropArea)
+  
+  # group the things that do not change in a 1 km2 cell (i.e. all but crop type)
+  fertClasses <- cropArea %>%
+    # soil texture
+    mutate(textureValue = if_else(textureCat == "fine", textureCoefs[["fine1"]]
+                                  , if_else(textureCat == "medium", textureCoefs[["medium1"]]
+                                            , textureCoefs[["course1"]]))) %>%
+    # soc
+    mutate(socValue = if_else(socCat == "soc_1", socCoefs[["soc_11"]]
+                              , if_else(socCat == "soc_1_3", socCoefs[["soc_1_31"]]
+                                        , if_else(socCat == "soc_3_6", socCoefs[["soc_3_61"]]
+                                                  , socCoefs[["soc_61"]])))) %>%
+    # cec
+    mutate(cecValue = if_else(cecCat == "low CEC", cecCoefs[["low_CEC1"]]
+                              , if_else(cecCat == "low-mod CEC", cecCoefs[["low_modCEC1"]]
+                                        , if_else(cecCat == "high-mod CEC", cecCoefs[["high_modCEC1"]]
+                                                  , cecCoefs[["highCEC1"]])))) %>%
+    # ph
+    mutate(phValue = if_else(phCat == "low pH", phCoefs[["low_ph1"]]
+                             , if_else(phCat == "low-mod pH", phCoefs[["low_modph1"]]
+                                       , if_else(phCat == "high-mod pH", phCoefs[["high_modph1"]]
+                                                 , phCoefs[["highph1"]])))) %>%
+    # drainage
+    mutate(drainValue = drainageCoefs[[1]]) %>%
+    # sum all the outcomes
+    mutate(sumN2Ofactors = rowSums(dplyr::select(.[,,drop = T], c(textureValue:drainValue)))) %>%
+    # add crop class factors
+    ## get total crop area of either grass (uncropped), legumes (beans), or other
+    mutate(otherUplandHa = rowSums(dplyr::select(.[,,drop = T], c(oats_ha, sugarbeet_ha
+                                                                  , maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha
+                                                                  , potato_ha, rapeseed_ha))))
+  fertClasses[is.na(fertClasses)] <- 0
+  head(fertClasses)
+  
+  # deal with the different crops in the same cell separately
+  fertClassesSplit <- fertClasses %>%
+    # where otherUplandHa is present, calculate summed factors
+    mutate(summedOU = if_else(otherUplandHa > 0, cropTypeCoefs[["other_upland1"]] + sumN2Ofactors, 0)
+           # where beans are present, calculate summed factors
+           , summedLegumes = if_else(fieldbeans_ha > 0, cropTypeCoefs[["legumes1"]] + sumN2Ofactors, 0)
+           # where grass is present, calculate summed factors
+           , summedGrass = if_else(improved_grass_ha > 0, cropTypeCoefs[["grass1"]] + sumN2Ofactors, 0)
+    ) %>%
+    # extract just important columns (i.e. ha of crops, and summed factors)
+    dplyr::select(rcFid_1km, otherUplandHa, summedOU, fieldbeans_ha, summedLegumes
+                  , improved_grass_ha, summedGrass) %>%
+    # add constant, k, and then exponential
+    mutate(summedOUtotal = exp(summedOU + -0.41)
+           , summedLegumestotal = exp(summedLegumes + -0.41)
+           , summedGrasstotal = exp(summedGrass + -0.41)) %>%
+    ## ------------ Notes --------------  ##
+    ## The above gives background emission values in kg N2O-N, per ha
+    ## Each of the crop areas are in hectares, so multiply to get value for 
+    ## each km cell
+    ## ------------ ----- --------------  ##
+    mutate(backgN20_kgkm2 = ((summedOUtotal *  otherUplandHa) +
+                               (summedLegumestotal * fieldbeans_ha) +
+                               (summedGrasstotal * improved_grass_ha))) %>%
+    dplyr::select(rcFid_1km, otherUplandHa, fieldbeans_ha
+                  , improved_grass_ha, backgN20_kgkm2) 
+  head(fertClassesSplit)
+  
+  ###### 7d2 - N2O direct ######
+  # determine L_direct from eq. 2.3.3a in CFT
+  # these are termed as 'direct N2O emissions' in CFT and
+  # are based on the emission factors from classes of (in addition to the ones for
+  # background emissions): application rate, and fertiliser type
+  # Bouwman et al. (2002) states that the fertiliser type and the application rate must be used.
+  # for simplicity, the ammonium nitrate urea solution will be the only one used in this study
+  # due to generally lower emissions
+  
+  # deal with the different crops and amount of N in the same cell separately
+  # this is an interaction term
+  fertClassesDirect <- fertClasses %>%
+    # fertiliser type - nitrate solution
+    mutate(fertValueSolution = fertiliserCoefs[["nitrateSol1"]]) %>%
+    # application rate
+    merge(., snsParasKgNman %>% st_drop_geometry()
+          , by = c("rcFid_1km")) %>%
+    # get combined N for 'otherUplandHa' crops - for a Ha
+    mutate(NforOtherUp = rowSums(dplyr::select(.[,,drop = T]
+                                               , c(contains(c("maize_kgN", "winterwheat_kgN", "springwheat_kgN"
+                                                              , "winterbarley_kgN", "springbarley_kgN"
+                                                              , "potatoes_kgN", "sugarbeet_kgN", "osr_kgN"
+                                                              , "forage_kgN" # oats
+                                               ))))) / 100
+           # get combined N for beans - for a Ha
+           , NforBeans = rowSums(dplyr::select(.[,,drop = T]
+                                               , c(contains(c("beans_kgN"))))) / 100
+           # get combined N for grass - for a Ha
+           , NforGrass = rowSums(dplyr::select(.[,,drop = T]
+                                               , c(contains(c("uncropped_kgN"))))) / 100
+           , ) %>%
+    # calculate the interaction term
+    mutate(NrateFertInterOU = fertValueSolution * NforOtherUp
+           , NrateFertInterBean = fertValueSolution * NforBeans
+           , NrateFertInterGras = fertValueSolution * NforGrass) %>%
+    ## where otherUplandHa is present, calculate summed factors
+    mutate(summedOUSol = if_else(otherUplandHa > 0, cropTypeCoefs[["other_upland1"]] + sumN2Ofactors + NrateFertInterOU, 0)
+           ## where beans are present, calculate summed factors
+           , summedLegumesSol = if_else(fieldbeans_ha > 0, cropTypeCoefs[["legumes1"]] + sumN2Ofactors + NrateFertInterBean, 0)
+           ## where grass is present, calculate summed factors
+           , summedGrassSol = if_else(improved_grass_ha > 0, cropTypeCoefs[["grass1"]] + sumN2Ofactors + NrateFertInterGras, 0)
+    ) %>%
+    # extract just important columns (i.e. ha of crops, and summed factors)
+    dplyr::select(rcFid_1km, otherUplandHa, summedOUSol, NforOtherUp
+                  , fieldbeans_ha, summedLegumesSol, NforBeans
+                  , improved_grass_ha, summedGrassSol, NforGrass) %>%
+    # add constant, k, and then exponential
+    mutate(summedOUtotal = exp(summedOUSol + -0.41)
+           , summedLegumestotal = exp(summedLegumesSol + -0.41)
+           , summedGrasstotal = exp(summedGrassSol + -0.41)) %>%
+    ## ------------ Notes --------------  ##
+    ## The above gives direct emission values in kg N2O-N, per ha
+    ## Each of the crop areas are in hectares, so multiply to get value for 
+    ## each km cell
+    ## ------------ ----- --------------  ##
+    mutate(directN20_kgkm2 = ((summedOUtotal *  otherUplandHa) +
+                                (summedLegumestotal * fieldbeans_ha) +
+                                (summedGrasstotal *  improved_grass_ha))) %>%
+    dplyr::select(rcFid_1km, otherUplandHa, summedOUtotal
+                  , fieldbeans_ha, summedLegumestotal
+                  , improved_grass_ha, summedGrasstotal
+                  , directN20_kgkm2) 
+  head(fertClassesDirect)
+  
+  ###### 7d3 - N2O direct and background ######
+  fertN2ODirBackg <- fertClassesDirect %>%
+    dplyr::select(rcFid_1km, directN20_kgkm2) %>%
+    merge(., fertClassesSplit %>% dplyr::select(rcFid_1km, backgN20_kgkm2) %>%
+            st_drop_geometry())
+  head(fertN2ODirBackg)
+  
+  ###### 7d4 - NO direct ######
+  # NO is calculated in the same way N2O direct, but requires fewer factors: only
+  # application rate, fertiliser type, soc, and drainage
+  # group the things that do not change in a 1 km2 cell
+  fertClasses <- cropArea %>%
+    replace(is.na(.), 0) %>%
+    # soc
+    mutate(socValue = if_else(socCat == "soc_1", socCoefs[["soc_12"]]
+                              , if_else(socCat == "soc_1_3", socCoefs[["soc_1_32"]]
+                                        , if_else(socCat == "soc_3_6", socCoefs[["soc_3_62"]]
+                                                  , socCoefs[["soc_62"]])))) %>%
+    # drainage
+    mutate(drainValue = drainageCoefs[[2]]) %>%
+    # sum all the outcomes
+    mutate(sumN2Ofactors = rowSums(dplyr::select(.[,,drop = T], c(socValue:drainValue)))) %>%
+    # add crop class factors
+    ## get total crop area of either grass (uncropped), legumes (beans), or other
+    mutate(otherUplandHa = rowSums(dplyr::select(.[,,drop = T], c(oats_ha, sugarbeet_ha
+                                                                  , maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha
+                                                                  , potato_ha, rapeseed_ha)))) %>%
+    # fertiliser type - nitrate solution
+    mutate(fertValueSolution = fertiliserCoefs[["nitrateSol2"]]) %>%
+    # application rate
+    merge(., snsParasKgNman %>% st_drop_geometry()
+          , by = c("rcFid_1km")) %>%
+    # get combined N for 'otherUplandHa' crops - for a Ha
+    mutate(NforOtherUp = rowSums(dplyr::select(.[,,drop = T]
+                                               , c(contains(c("maize_kgN", "winterwheat_kgN", "springwheat_kgN"
+                                                              , "winterbarley_kgN", "springbarley_kgN"
+                                                              , "potatoes_kgN", "sugarbeet_kgN", "osr_kgN"
+                                                              , "forage_kgN" # oats
+                                               ))))) / 100
+           # get combined N for beans - for a Ha
+           , NforBeans = rowSums(dplyr::select(.[,,drop = T]
+                                               , c(contains(c("beans_kgN"))))) / 100
+           # get combined N for grass - for a Ha
+           , NforGrass = rowSums(dplyr::select(.[,,drop = T]
+                                               , c(contains(c("uncropped_kgN"))))) / 100
+           , ) %>%
+    # calculate the interaction term
+    mutate(NrateFertInterOU = fertValueSolution * NforOtherUp
+           , NrateFertInterBean = fertValueSolution * NforBeans
+           , NrateFertInterGras = fertValueSolution * NforGrass) %>%
+    ## where otherUplandHa is present, calculate summed factors
+    mutate(summedOUSol = if_else(otherUplandHa > 0, cropTypeCoefs[["other_upland2"]] + sumN2Ofactors + NrateFertInterOU, 0)
+           ## where beans are present, calculate summed factors
+           , summedLegumesSol = if_else(fieldbeans_ha > 0, cropTypeCoefs[["legumes2"]] + sumN2Ofactors + NrateFertInterBean, 0)
+           ## where grass is present, calculate summed factors
+           , summedGrassSol = if_else(improved_grass_ha > 0, cropTypeCoefs[["grass2"]] + sumN2Ofactors + NrateFertInterGras, 0)
+    ) %>%
+    # extract just important columns (i.e. ha of crops, and summed factors)
+    dplyr::select(rcFid_1km, otherUplandHa, summedOUSol, NforOtherUp
+                  , fieldbeans_ha, summedLegumesSol, NforBeans
+                  , improved_grass_ha, summedGrassSol, NforGrass) %>%
+    # add constant, k, and then exponential
+    mutate(summedOUtotal = exp(summedOUSol + -1.527)
+           , summedLegumestotal = exp(summedLegumesSol + -1.527)
+           , summedGrasstotal = exp(summedGrassSol + -1.527)) %>%
+    ## ------------ Notes --------------  ##
+    ## The above gives direct emission values in kg N2O-N, per ha
+    ## Each of the crop areas are in hectares, so multiply to get value for 
+    ## each km cell
+    ## ------------ ----- --------------  ##
+    mutate(directN0_kgkm2 = ((summedOUtotal *  otherUplandHa) +
+                               (summedLegumestotal * fieldbeans_ha) +
+                               (summedGrasstotal *  improved_grass_ha))) %>%
+    dplyr::select(rcFid_1km, otherUplandHa, summedOUtotal
+                  , fieldbeans_ha, summedLegumestotal
+                  , improved_grass_ha, summedGrasstotal
+                  , directN0_kgkm2) %>%
+    # NO needs to be convert to N2O. This can be done using a conversion of 0.01
+    mutate(N2O_kgkm_fromNO = directN0_kgkm2 * 0.01)
+  head(fertClasses)
+  
+  ###### 7d5 - N2O direct and background and from NO ######
+  fertN2Os <- fertN2ODirBackg %>%
+    merge(., fertClasses %>% dplyr::select(rcFid_1km, N2O_kgkm_fromNO) %>%
+            st_drop_geometry())
+  
+  ###### 7d6 - NH3 from volatisation ######
+  # NH3 is calculated in a similar way to N2O direct, but requires fewer factors: 
+  # crop type, soil texture, cec, pH, drainage, fertiliser type, and application method
+  
+  # group the things that do not change in a 1 km2 cell (i.e. all but crop type)
+  fertClassesNH3 <- cropArea %>%
+    replace(is.na(.), 0) %>%
+    # soil texture
+    mutate(textureValue = if_else(textureCat == "fine", textureCoefs[["fine3"]]
+                                  , if_else(textureCat == "medium", textureCoefs[["medium3"]]
+                                            , textureCoefs[["course3"]]))) %>%
+    # cec
+    mutate(cecValue = if_else(cecCat == "low CEC", cecCoefs[["low_CEC3"]]
+                              , if_else(cecCat == "low-mod CEC", cecCoefs[["low_modCEC3"]]
+                                        , if_else(cecCat == "high-mod CEC", cecCoefs[["high_modCEC3"]]
+                                                  , cecCoefs[["highCEC3"]])))) %>%
+    # ph
+    mutate(phValue = if_else(phCat == "low pH", phCoefs[["low_ph3"]]
+                             , if_else(phCat == "low-mod pH", phCoefs[["low_modph3"]]
+                                       , if_else(phCat == "high-mod pH", phCoefs[["high_modph3"]]
+                                                 , phCoefs[["highph3"]])))) %>%
+    # drainage
+    mutate(drainValue = drainageCoefs[[3]]) %>%
+    # application method
+    mutate(applValue = applMethodNH3) %>%
+    # fertiliser type
+    mutate(fertValue = fertiliserCoefs[["nitrateSol3"]]) %>%
+    # sum all the outcomes
+    mutate(sumNH3factors = rowSums(dplyr::select(.[,,drop = T], c(textureValue:fertValue))))
+  head(fertClassesNH3)
+  
+  # deal with the different crops in the same cell separately
+  fertClassesNH3crop <- fertClassesNH3 %>%
+    ## get total crop area of either grass (uncropped), legumes (beans), or other
+    mutate(otherUplandHa = rowSums(dplyr::select(.[,,drop = T], c(oats_ha, sugarbeet_ha
+                                                                  , maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha
+                                                                  , potato_ha, rapeseed_ha)))) %>%
+    # where otherUplandHa is present, calculate summed factors
+    mutate(summedOU = if_else(otherUplandHa > 0, cropTypeCoefs[["other_upland3"]] + sumNH3factors, 0)
+           # where beans are present, calculate summed factors
+           , summedLegumes = if_else(fieldbeans_ha > 0, cropTypeCoefs[["legumes3"]] + sumNH3factors, 0)
+           # where grass is present, calculate summed factors
+           , summedGrass = if_else(improved_grass_ha > 0, cropTypeCoefs[["grass3"]] + sumNH3factors, 0)
+    ) %>%
+    # add constant, k, and then exponential
+    mutate(summedOUtotal = exp(summedOU)
+           , summedLegumestotal = exp(summedLegumes)
+           , summedGrasstotal = exp(summedGrass)) %>%
+    ## ------------ Notes --------------  ##
+    ## unlike N2O and NO, NH3 needs to be multiplied by application rate *after* the
+    ## sum of the factors has taken place
+    ## Therefore, the exact amount of N per ha needs to be determined. This can be done
+    ## by back-calculating the SNS classes
+    ## ------------ ----- --------------  ##
+    st_join(., snsParasKgNman %>% dplyr::select(-c(X, Y, rcFid_1km))) %>%
+    dplyr::select(c(rcFid_1km, threeParas
+                    , oats_ha, maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha, otherUplandHa
+                    , potato_ha, rapeseed_ha, fieldbeans_ha, improved_grass_ha, sugarbeet_ha
+                    , contains(c("sns0_", "sns1_", "sns2_", "sns4_")))
+                  , summedOUtotal, summedLegumestotal, summedGrasstotal) %>%
+    # get rowsums of different crops in terms of N application
+    mutate(sugarbeet_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("sugarbeet_kgN"))))
+           , winterbarley_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("winterbarley_kgN"))))
+           , springbarley_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("springbarley_kgN"))))
+           , winterwheat_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("winterwheat_kgN"))))
+           , springwheat_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("springwheat_kgN"))))
+           , maize_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("maize_kgN"))))
+           , potatoes_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("potatoes_kgN"))))
+           , beans_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("beans_kgN"))))
+           , osr_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("osr_kgN"))))
+           , oats_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("forage_kgN"))))
+           , uncropped_kgN = rowSums(dplyr::select(.[,,drop = T], c(contains("uncropped_kgN"))))
+    ) %>%
+    # divide amount of N by hectare of each crop
+    mutate(sugarbeet_kgN_ha = sugarbeet_kgN / sugarbeet_ha
+           , winterbarley_kgN_ha = winterbarley_kgN / winterbarley_ha
+           , springbarley_kgN_ha = springbarley_kgN / springbarley_ha
+           , winterwheat_kgN_ha = winterwheat_kgN / winterwheat_ha
+           , springwheat_kgN_ha = springwheat_kgN / springwheat_ha
+           , maize_kgN_ha = maize_kgN / maize_ha
+           , potatoes_kgN_ha = potatoes_kgN / potato_ha
+           , beans_kgN_ha = beans_kgN / fieldbeans_ha
+           , osr_kgN_ha = osr_kgN / rapeseed_ha
+           , oats_kgN_ha = oats_kgN / oats_ha
+           , uncropped_kgN_ha = uncropped_kgN / improved_grass_ha
+    ) %>% replace(is.na(.), 0) %>%
+    dplyr::select(c(rcFid_1km, threeParas
+                    , oats_ha, maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha
+                    , potato_ha, rapeseed_ha, fieldbeans_ha, improved_grass_ha, sugarbeet_ha
+                    , contains(c("kgN_ha")))
+                  , summedOUtotal, summedLegumestotal, summedGrasstotal) %>%
+    # calculate NH3 emissions for all different crops based on the N input
+    # area (in ha) * emissions from factors * N amount per ha
+    mutate(sugarbeet_NH3_km2 = sugarbeet_ha * summedOUtotal * sugarbeet_kgN_ha
+           , winterbarley_NH3_km2 = winterbarley_ha * summedOUtotal * winterbarley_kgN_ha
+           , springbarley_NH3_km2 = springbarley_ha * summedOUtotal * springbarley_kgN_ha
+           , winterwheat_NH3_km2 = winterwheat_ha * summedOUtotal * winterwheat_kgN_ha
+           , springwheat_NH3_km2 = springwheat_ha * summedOUtotal * springwheat_kgN_ha
+           , maize_NH3_km2 = maize_ha * summedOUtotal * maize_kgN_ha
+           , potatoes_NH3_km2 = potato_ha * summedOUtotal * potatoes_kgN_ha
+           , beans_NH3_km2 = fieldbeans_ha * summedLegumestotal * beans_kgN_ha
+           , osr_NH3_km2 = rapeseed_ha * summedOUtotal * osr_kgN_ha
+           , oats_NH3_km2 = oats_ha * summedOUtotal * oats_kgN_ha
+           , uncropped_NH3_km2 = improved_grass_ha * summedGrasstotal * uncropped_kgN_ha
+    ) %>%
+    # sum together, to get overall value for km2
+    mutate(NH3_km2 = rowSums(dplyr::select(.[,,drop = T], c(contains("NH3_km2"))))) %>%
+    # convert to N2O using a 0.01 conversion
+    mutate(N2O_kgkm2_fromNH3 = NH3_km2 * 0.01) %>%
+    dplyr::select(c(rcFid_1km
+                    , oats_ha, maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha
+                    , potato_ha, rapeseed_ha, fieldbeans_ha, improved_grass_ha, sugarbeet_ha
+                    , NH3_km2, N2O_kgkm2_fromNH3))
+  head(fertClassesNH3crop)
+  
+  ###### 7d7 - N2O direct and background and from NO and from NH3 (volatisation) ######
+  fertN2Os <- fertN2Os %>%
+    merge(., fertClassesNH3crop %>% dplyr::select(rcFid_1km, N2O_kgkm2_fromNH3) %>%
+            st_drop_geometry())
+  head(fertN2Os)
+  
+  ###### 7d8 - NH3 from leaching ######
+  # EQUATION 11.11 in IPCC (2019)
+  # sum(A (fertiliser rate [kg N]) * FracGASF (leaching fraction [Volatilisation from synthetic fertiliser]))
+  # FracGASF is 0.08, according to Table 11.3 in IPCC (2019)
+  # multiplied by emission factor for N2O emissions from atmospheric deposition of N on soils and water, which
+  # is 0.014 in IPCC (2019)
+  
+  leachingNH3 <- snsParasKgNman %>%
+    dplyr::select(rcFid_1km, finalkgNfert) %>%
+    # calculate leaching
+    mutate(kgN2O_N_leach = (finalkgNfert * 0.08) * 0.014)
+  head(leachingNH3)
+  
+  ###### 7d9 - N2O from NO, NH3 (volatisation), leaching ######
+  fertN2Os <- fertN2Os %>%
+    merge(., leachingNH3 %>% dplyr::select(rcFid_1km, kgN2O_N_leach) %>%
+            st_drop_geometry())
+  # all of the above are in the N2O-N form. To convert these, the equation is:
+  # N2O-N * 44/28 = N2O
+  fertN2Os_N2O <- fertN2Os %>%
+    mutate(across(directN20_kgkm2:kgN2O_N_leach, ~ . * 44/28, .names = "finN2O_{.col}")) %>%
+    # get final value for combination of background and direct emissions, from volatisation, and from leaching
+    mutate(totalN20_kgkm2 = finN2O_directN20_kgkm2 + finN2O_N2O_kgkm_fromNO + finN2O_N2O_kgkm2_fromNH3 + finN2O_kgN2O_N_leach) %>%
+    # to get the amunt in CO2e, times by 298
+    mutate(totalCO2e_kgkm2 = totalN20_kgkm2 * 298)
+  
+  # add liming CO2e values in
+  liming <- st_read(file.path(savePath, "liming_eval.gpkg"))
+  fertCO2e <- fertN2Os_N2O %>%
+    merge(., liming %>% st_drop_geometry()) %>%
+    # add lime to total
+    mutate(fertliser_CO2e_kgkm2 = totalCO2e_kgkm2 + (limeTco2e * 1000) # to make kg
+    ) %>%
+    dplyr::select(c(rcFid_1km: kgN2O_N_leach
+                    , limeAmount_tonnes, limeTco2e
+                    , fertliser_CO2e_kgkm2))
+  head(fertCO2e)
+  
+  # write
+  st_write(fertCO2e, file.path(savePath, "fertiliser_emissions.gpkg"), append = F)
+  fwrite(fertCO2e %>% st_drop_geometry(), file.path(savePath, "fertiliser_emissions.csv"), row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(savePath, "readme_fertiliser_emissions.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'fertiliser_emissions' contain information the emissions, in the form of CO2 equivalents, produced by the use of potential fertilisers per km2.
+These are potential emissions, and were based on the guidance in RB209, which stated what one would need to do to get the highest potential yield. However, it should be noted that this does not take in financial considerations
+The final values in the fertiliser_emissions files are the combination of direct (i.e. fertiliser-induced) and background (soil) emissions, emissions from volatisation, leaching, and addition of limestone
+The values where derived in the form of N2O equivalents, but have been transformed to CO2e.
+
+The columns:
+      'rcFid_1km' = 1 km2 pixel identifier, x and y centroid coordinates of 1 km pixel (EPSG: 27700)
+      'directN20_kgkm2' = emissions, in kg N2O-N, from direct (i.e. fertiliser-induced) and soil sources
+      'backgN20_kgkm2' = emissions, in kg N2O-N, from soil sources
+      'directN0_N2O_kgkm2' = emissions, in kg N2O-N, from direct (i.e. fertiliser-induced) sources. This is the NO portion, which has then been converted to the equivalent N2O emissions (using a 0.01 conversion)
+      'N2O_kgkm2_fromNH3' = emissions, in kg N2O-N, from volatilisation of ammonia. These were originally calculated in terms of NH3, which was then converted to the equivalent N2O emissions (using a 0.01 conversion)
+      'kgN2O_N_leach' = emissions, in kg N2O-N, from leaching of N
+      'limeAmount_tonnes' = amount, in metric tonnes, of lime applied to a km2 to get highest potential yield, as calculated based on RB209 advice
+      'limeTco2e' = emissions, in t co2e, from the application of limestone
+      'fertliser_CO2e_kgkm2' = total co2e emissions, in kg co2e, from all of the aspects of fertilisers that create emissions
+          
+Data:
+    units: kg CO2e emissions per km2 (for 'fertliser_CO2e_kgkm2') 
+    Spatial resolution: 1 km2
+    Spatial extent: GB
+    Temporal coverage: 2015/2016
+    Native projection: 27700")
+  
+  sink(file = NULL)
+} # end of fertiliser (part 7)
