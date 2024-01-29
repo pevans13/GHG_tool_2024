@@ -96,7 +96,7 @@ part1LandCoverGrid <- F
 
 # part 2 creates a grid that contains the number of animals present in a 1 km2
 # cell. It uses Defra CTS data and AgCensus data to derive the animal numbers
-part2AnimalGrid <- F
+part2AnimalGrid <- T
 
 # part 3 creates attribute tables for each type of animal
 part3AnimalAttributes <- F
@@ -108,7 +108,7 @@ part4Enteric <- F
 part5ManureManagement <- F
 
 # part 6 calculates the amount of excretions produced per animal
-part6excretions <- T
+part6excretions <- F
 
 # part 7 calculates the amount of N used as fertilisers, based on RB209, and then the
 # emissions created by that N use. 
@@ -351,6 +351,8 @@ rm(part1LandCoverGrid)
 
 #### 2 - part2AnimalGrid ####
 if(part2AnimalGrid){
+  
+  # stop("part 2 - top")
   
   ## ------------ Notes --------------  ##
   ## The data used for animal numbers comes from a combination of CTS (defra data)
@@ -986,6 +988,13 @@ if(part2AnimalGrid){
     nonBov1km <- dplyr::full_join(nonBov1kmGBprop2, sheepNumb.point
                                   , relationship = "many-to-many") %>%
       filter(!is.na(region))
+    head(nonBov1km)
+    # only keep distint IDs
+    nb <- distinct(nonBov1km %>% st_drop_geometry())
+    nonBov1km <- nonBov1kmGB.prop2 %>%
+      dplyr::select(rcFid_1km, region) %>%
+      merge(. 
+            , nb)
     
     pigNumb.point <- raster(pigNumb.rast) %>% rasterToPoints() %>%
       # Convert SpatialPointsDataFrame to sf object
@@ -3720,7 +3729,7 @@ if(part7fertiliserUse){
   # https://naei.beis.gov.uk/data/ef-all-results?q=184177 states that the emission factor for limestone is 0.12 t CO2e t−1
   limeReqsAmounts$limeTco2e <- limeReqsAmounts$limeAmount_tonnes * 0.12
   head(limeReqsAmounts)
-
+  
   # save
   st_write(limeReqsAmounts, file.path(savePath, "liming_eval.gpkg"), append = F)
   fwrite(st_drop_geometry(limeReqsAmounts), file.path(savePath, "liming_eval.csv"), row.names = F)
@@ -4736,3 +4745,1739 @@ Data:
   
   sink(file = NULL)
 } # end of fertiliser (part 7)
+
+#### 8 - part8landuse ####
+if(part8landuse){
+  
+  # set input location - for land cover
+  currPath <- file.path("./data_in", "land_cover")
+  # and for crops
+  CropPath <- "./data_in/crops"
+  # results
+  savePath <- "./results/land_use"
+  
+  # import GE 1 km2 crop area for 2015
+  landArea <- st_read(file.path(currPath, "land_cover_table.gpkg")) %>%
+    relocate(improved_grass_ha, .before=winterwheat_ha) 
+  head(landArea)
+  
+  ##### 8a - land cover #####
+  # make all crops into 'arable'
+  # Identify the columns ending with '_ha'
+  hectareCols1 <- which(colnames(landArea) == "winterwheat_ha")
+  hectareCols2 <- which(colnames(landArea) == "sugarbeet_ha")
+  
+  cropTableHa <- landArea %>%
+    replace(is.na(.), 0) %>%
+    mutate(Arable_ha = rowSums(.[, hectareCols1:hectareCols2, drop=TRUE], na.rm = TRUE)) %>%
+    dplyr::select(-c(winterwheat_ha:sugarbeet_ha)) %>%
+    # assign correct order
+    relocate(broadleaf_ha, conifer_ha, Arable_ha, improved_grass_ha
+             , neutral_grass_ha, calc_grass_ha, acid_grass_ha, fen_marsh_ha, heather_ha               
+             , heather_grass_ha, bog_ha, inland_rock_ha, saltwater_ha, freshwater_ha, sup_lit_rock_ha
+             , sup_lit_sed_ha, lit_rock_ha, lit_sed_ha, saltmarsh_ha, urban_ha, suburban_ha)
+  head(cropTableHa)
+  
+  # save
+  st_write(cropTableHa, file.path(currPath, "land_cover_area.gpkg"), append = F)
+  fwrite(st_drop_geometry(cropTableHa)
+         , file.path(currPath, "land_cover_area.csv")
+         , row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(currPath, "readme_land_cover_area.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'land_cover_area' contain the area, in hectares, of different land covers, derived from CEH's LCM2015 and Land Cover® plus: Crops 2016 (Rowland et al., 2017)
+The columns:
+      'rcFid' = 1 km reference id
+      '[land cover type]' = area of the land covered, in ha, by the title land cover type in a 1 km2 pixel
+          land covers:
+           arable = winter wheat + winter barley + spring wheat + oats + maize + rapeseed + spring barley + potato + field beans + sugat beet
+           improved_grass = improved grassland
+           broadleaf = broadleaved woodland
+           conifer = coniferous woodland
+           neutral_grass = neutral grassland
+           calc_grass = calcareous grassland
+           acid_grass = acid grassland
+           fen_marsh = fen, marsh, and swamp
+           heather = heather
+           heather_grass = heather grassland
+           bog = bog
+           inland_rock = inland rock
+           saltwater = saltwater
+           freshwater = freshwater
+           sup_lit_rock = supra-littoral rock
+           sup_lit_sed = supra-littoral sediment
+           lit_rock = littoral rock
+           lit_sed = littoral sediment
+           saltmarsh = saltmarsh
+           urban = urban
+           suburban = suburban
+units: ha/km2 
+Spatial resolution: 1 km2
+Spatial extent: England
+Temporal coverage: 2016
+Native projection: 27700
+      
+citations: Rowland, C.S.; Morton, R.D.; Carrasco, L.; McShane, G.; O'Neil, A.W.; Wood, C.M. (2017). Land Cover Map 2015 (1km dominant aggregate class, GB). NERC Environmental Information Data Centre. https://doi.org/10.5285/711c8dc1-0f4e-42ad-a703-8b5d19c92247 ")
+  
+  sink(file = NULL)
+  
+  #### 8b - add in margins ####
+  ## ------------ Notes --------------  ##
+  ## each km2 has different amounts of field margins.
+  ## for ease of interpretation, these are will be subtracted from 'arable' land
+  ## areas, if possible. If not, they will come off improved grassland.
+  ## ------------ ----- --------------  ##
+  
+  # if ccs and ees data has not already been created, import
+  if (!file.exists(file.path(currPath, "margin_area.gpkg"))){
+    
+    # the countryside survey has field margin data, so import it
+    ccs_aes <- read.csv("N:\\Data\\UK\\countryside_survey/Countryside_Stewardship_Scheme_2016_Management_Options_(England).csv")
+    # and environmental stewardship schemes AES 
+    ees_aes <- read.csv("N:\\Data\\UK\\AES/Environmental_Stewardship_Scheme_Options_(England).csv")
+    
+    # check
+    str(ccs_aes)
+    # opt_desc column important
+    str(ees_aes)
+    # 'opttitle' column important
+    
+    # reduce to just margin data
+    ccs_margin <- ccs_aes[grepl("margin|strip", ccs_aes$opt_desc), ]
+    ees_margin <- ees_aes[grepl("margin|strip", ees_aes$opttitle), ]
+    # tidy
+    rm(ccs_aes, ees_aes)
+    
+    # determine unique margins
+    # and remove any that are not relevant
+    print(list(unique(ccs_margin$opt_desc)))
+    print(list(unique(ees_margin$opttitle)))
+    ees_margin <- ees_margin[!ees_margin$opttitle %in% c("Cultivated fallow plots or margins for arable plants"
+                                                         , "Uncropped, cultivated margins for rare plants on arable land"
+                                                         , "Uncropped, cultivated margins for rare plants"), ]
+    
+    # make point data
+    ees_mar_point <- st_as_sf(ees_margin, coords = c("X", "Y"), crs = 27700)
+    ccs_mar_point <- st_as_sf(ccs_margin, coords = c("X", "Y"), crs = 27700)
+    # tidy
+    # rm(ees_margin, ccs_margin)
+    
+    # only keep necessary cols
+    ees_mar_point <- ees_mar_point[, c("OBJECTID", "optcode", "opttitle", "areaha")]
+    ccs_mar_point <- ccs_mar_point[, c("OBJECTID", "opt_code", "opt_desc", "quantity")]
+    # make both a common format
+    colnames(ees_mar_point) <- colnames(ccs_mar_point)
+    # convert
+    ccs_mar_point$quantity <- as.numeric(ccs_mar_point$quantity)
+    
+    # spatial join, removing geometry first
+    marginPoints <- rbind(ees_mar_point %>% as.data.frame(), ccs_mar_point %>% as.data.frame())
+    # make spatial again
+    marginPoints <- st_as_sf(marginPoints) %>%
+      rename(area_ha = quantity)
+    
+    # type of margin
+    marginPoints$type <- ifelse(grepl("tree", marginPoints$opt_desc), "tree", "flower")
+    head(marginPoints)
+    st_crs(marginPoints)
+    
+    # using cropTable, add the points to a polygon, keeping the information from both
+    margPolyInter <- st_intersection(marginPoints, cropTableHa) %>%
+      st_as_sf() %>%
+      # drop spatial
+      st_drop_geometry() %>%
+      # keep only necessary
+      dplyr::select(rcFid_1km, area_ha, type)
+    head(margPolyInter)
+    unique(margPolyInter$type)
+    
+    # sum for each rcFid based on area and type
+    marginSum <- margPolyInter %>%
+      group_by(rcFid_1km, type) %>%
+      # make tonnes from kg
+      summarise(total_area = sum(area_ha, na.rm = T)) %>% as.data.frame() %>%
+      # pivot wider, to separate flower and tree
+      pivot_wider(names_from = type, values_from = total_area) %>%
+      replace(is.na(.), 0)
+    
+    # merge back to spatial
+    marginSum <- marginSum %>%
+      rename(flowerMargin_ha = flower
+             , treeMargin_ha = tree) %>%
+      merge(cropTableHa %>% dplyr::select(rcFid_1km), .)
+    str(marginSum)
+    head(marginSum)
+    
+    # save
+    st_write(marginSum, file.path(currPath, "margin_area.gpkg"), append = F)
+    fwrite(st_drop_geometry(marginSum)
+           , file.path(currPath, "margin_area.csv")
+           , row.names = F)
+    
+    # write readme
+    sink(file = NULL)
+    sink(file = file.path(currPath, "readme_margin_area.md"))
+    cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'margin_area' contain the area, in hectares, of tree and flower field margins. This information was derived from countryside survey data, and environmental stewardship schemes AES data. Each margin was classified as either 'tree' or 'flower', indicating a field margin composed of trees and flowers, respectively.
+The columns:
+      'rcFid_1km' = 1 km reference id
+      'flowerMargin_ha' = area of the land covered by flower field margins in a 1 km2 pixel (ha)
+      'treeMargin_ha' = area of the land covered by tree field margins in a 1 km2 pixel (ha)
+units: ha/km2 
+Spatial resolution: 1 km2
+Spatial extent: England
+Temporal coverage: 2016
+Native projection: 27700
+      
+the 'ccs_ees_margins.gpkg' file includes data that were obtained from Countryside Stewardship Scheme 2016 Management Options (England), which were provided by Natural England [url: https://naturalengland-defra.opendata.arcgis.com/datasets/countryside-stewardship-scheme-2016-management-options-england/explore?location=52.688216%2C-2.434032%2C6.68], under an Open Government Licence - https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3.
+  It contains information about the position and type of field margins in England.")
+    
+    sink(file = NULL)
+  } else {
+    # read in, if it already exists
+    marginSum <- st_read(file.path(currPath, "margin_area.gpkg"))
+  }
+  
+  #### 8c - add in hedgerows ####
+  ## ------------ Notes --------------  ##
+  ## each km2 has different amounts of hedgerows.
+  ## for ease of interpretation, these are will be subtracted from 'improved grassland' 
+  ## areas, if possible. If not, they will come off 'arable' lands.
+  ## ------------ ----- --------------  ##
+  
+  # first, the hedge area needs to be determined
+  hedge1km <- raster("N:/Data/UK/hedge/HedgeLength.grd")
+  crs(hedge1km) <- CRS('+init=EPSG:27700')
+  # convert to points
+  hedgePoints <- rasterToPoints(hedge1km, spatial = T) %>%
+    # convert to sf
+    st_as_sf(crs = 27700) %>%
+    # give column name
+    rename(hedgeLengthMperKm2 = 1)
+  
+  # To get ground area of hedgerow, multiply width by total length in a km
+  hedgePoints$hedgeAreaMperKm2 <- hedgePoints$hedgeLengthMperKm2 * 3.4
+  
+  # to get volume
+  hedgePoints$hedgeVolumeMperKm2 <- hedgePoints$hedgeLengthMperKm2 * 3.4 * 3.5
+  
+  str(hedgePoints)
+  head(hedgePoints)
+  
+  # save as vector
+  st_write(hedgePoints, file.path(currPath, "hedge_dims.gpkg"), append = F)
+  
+  # using cropTable, add the points to a polygon, keeping the information from both
+  hedgePolyInter <- st_intersection(hedgePoints, cropTableHa) %>%
+    st_as_sf() %>%
+    # remove points
+    st_drop_geometry() %>%
+    # keep only necessary
+    dplyr::select(rcFid_1km, hedgeAreaMperKm2, hedgeVolumeMperKm2) %>%
+    # merge into polygons
+    merge(cropTableHa %>% dplyr::select(rcFid_1km), .)
+  head(hedgePolyInter)
+  
+  # convert m2 to ha
+  hedgePolyInter <- hedgePolyInter %>%
+    mutate(hedgeAreaHaperKm2 = hedgeAreaMperKm2 / 10000)
+  
+  str(hedgePolyInter)
+  head(hedgePolyInter)
+  
+  # save
+  st_write(hedgePolyInter, file.path(currPath, "hedgerow_area.gpkg"), append = F)
+  fwrite(st_drop_geometry(hedgePolyInter)
+         , file.path(currPath, "hedgerow_area.csv")
+         , row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(currPath, "readme_hedgerow_area.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'hedgerow_area' contain the area and derived volume, in hectares and m3 respectively, of hedgerow area and volume in GB. This information was derived from CEH's Woody Linear Features dataset [url: https://catalogue.ceh.ac.uk/documents/d7da6cb9-104b-4dbc-b709-c1f7ba94fb16] (Scholefield et al. (2016))
+The dataset provides the length of woody features. The area and volume were derived from average hedgerow measurements in England.
+
+The columns:
+      'rcFid_1km' = 1 km reference id
+      'hedgeAreaMperKm2' = area of the land covered by hedgerows in a 1 km2 pixel (m2)
+      'hedgeAreaHaperKm2' = area of the land covered by hedgerows in a 1 km2 pixel (ha)
+      'hedgeVolumeMperKm2' = volume of hedgerows in a 1 km2 pixel (m3)
+units: ha/km2 (for 'hedgeAreaHaperKm2')
+Spatial resolution: 1 km2
+Spatial extent: GB
+Temporal coverage: 2016
+Native projection: 27700
+      
+the 'HedgeLength.grd' file includes data that were obtained from Scholefield et al. (2016)
+      
+citation: Scholefield, P.A.; Morton, R.D.; Rowland, C.S.; Henrys, P.A.; Howard, D.C.; Norton, L.R. (2016). Woody linear features framework, Great Britain v.1.0. NERC Environmental Information Data Centre. https://doi.org/10.5285/d7da6cb9-104b-4dbc-b709-c1f7ba94fb16")
+  sink(file = NULL)
+  
+  #### 8d - combine land cover data into one dataframe ####
+  landCoverHa <- merge(merge(cropTableHa
+                             , marginSum %>% st_drop_geometry()
+                             , by = "rcFid_1km", all = T)
+                       , hedgePolyInter %>% dplyr::select(rcFid_1km, hedgeAreaHaperKm2) %>% st_drop_geometry()
+                       , by = "rcFid_1km", all = T) %>%
+    replace(is.na(.), 0)
+  head(landCoverHa)
+  
+  # save
+  st_write(landCoverHa, file.path(currPath, "landCover_margins.gpkg"), append = F)
+  fwrite(st_drop_geometry(landCoverHa)
+         , file.path(currPath, "landCover_margins.csv")
+         , row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(currPath, "readme_landCover_margins.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'landCoverHa' contain the area, in hectares, of different land covers, derived from CEH's LCM2015 and Land Cover® plus: Crops 2016 (Rowland et al., 2017), Natural England's Countryside Survey data, and Scholefield et al. (2016)
+The columns:
+      'rcFid' = 1 km reference id
+      '[land cover type]' = area of the land covered the title land cover type in a 1 km2 pixel (ha)
+          land covers:
+           arable = winter wheat + winter barley + spring wheat + oats + maize + rapeseed + spring barley + potato + field beans + sugat beet
+           improved_grass = improved grassland
+           broadleaf = broadleaved woodland
+           conifer = coniferous woodland
+           neutral_grass = neutral grassland
+           calc_grass = calcareous grassland
+           acid_grass = acid grassland
+           fen_marsh = fen, marsh, and swamp
+           heather = heather
+           heather_grass = heather grassland
+           bog = bog
+           inland_rock = inland rock
+           saltwater = saltwater
+           freshwater = freshwater
+           supra_lit_rock = supra-littoral rock
+           supra_lit_sed = supra-littoral sediment
+           lit_rock = littoral rock
+           lit_sed = littoral sediment
+           saltmarsh = saltmarsh
+           urban = urban
+           suburban = suburban
+           flowerMargin_ha = field margins (composed of flowers) 
+           treeMargin_ha = field margins (composed of trees) 
+           hedgeAreaHaperKm2 = hedgerow
+           
+units: ha/km2 
+Spatial resolution: 1 km2
+Spatial extent: England
+Temporal coverage: 2016
+Native projection: 27700
+      
+citations:  Rowland, C.S.; Morton, R.D.; Carrasco, L.; McShane, G.; O'Neil, A.W.; Wood, C.M. (2017). Land Cover Map 2015 (1km dominant aggregate class, GB). NERC Environmental Information Data Centre. https://doi.org/10.5285/711c8dc1-0f4e-42ad-a703-8b5d19c92247)
+            Scholefield, P.A.; Morton, R.D.; Rowland, C.S.; Henrys, P.A.; Howard, D.C.; Norton, L.R. (2016). Woody linear features framework, Great Britain v.1.0. NERC Environmental Information Data Centre. https://doi.org/10.5285/d7da6cb9-104b-4dbc-b709-c1f7ba94fb16")
+  sink(file = NULL)
+  
+  ##### 8e - adjust area based on margins #####
+  # reduce area of arable and improved grassland for field margins and hedgerows respectively
+  landCoverHaAdapt <- landCoverHa %>%
+    mutate(arableNew_ha = Arable_ha - (flowerMargin_ha + treeMargin_ha)
+           # if the above lead to negative arable, take off IG instead
+           , IGnew_ha = ifelse(arableNew_ha < 0, improved_grass_ha - abs(arableNew_ha)
+                               , improved_grass_ha)
+           , arableNew_ha = ifelse(arableNew_ha < 0, 0, arableNew_ha)
+           , IGnew_ha = ifelse(IGnew_ha < 0, 0, IGnew_ha)) %>%
+    # reorder
+    relocate(rcFid_1km, broadleaf_ha, conifer_ha, arableNew_ha, IGnew_ha) %>%
+    # remove unneeded
+    dplyr::select(-c(Arable_ha, improved_grass_ha))
+  head(landCoverHaAdapt)
+  
+  ##### 8f - get emissions #####
+  # read in table with CO2e coefficients
+  lcCoefficients <- fread("data_in/land_cover/lcm_land_cover_co2.csv") %>% as.data.frame() %>%
+    rename(tCO2_ha = 3) %>%
+    # get value per 25 m2
+    mutate(tCO2_25m2 = tCO2_ha / 10000)
+  head(lcCoefficients)
+  
+  # ensure the land use headers, and coefficients are in the same order
+  stopifnot(grepl("rable", lcCoefficients$`LCM2015 target class`[[3]]) & grepl("rable", names(landCoverHaAdapt)[4]))
+  stopifnot(grepl("uburban", lcCoefficients$`LCM2015 target class`[[21]]) & grepl("uburban", names(landCoverHaAdapt)[22]))
+  
+  ##### non-margin land use #####
+  # multiply the area (in ha) by the per ha values
+  cropTimesCoef <- landCoverHaAdapt %>% st_drop_geometry() %>%
+    dplyr::select(-c(rcFid_1km, flowerMargin_ha, treeMargin_ha, hedgeAreaHaperKm2)) %>%
+    as.matrix %*% diag(lcCoefficients$tCO2_ha) %>% as.data.frame()
+  # rename
+  names(cropTimesCoef) <- paste0(names(landCoverHaAdapt)[2:22], "_tCO2")
+  names(cropTimesCoef) <- sub("_ha", "", (names(cropTimesCoef)))
+  head(cropTimesCoef)
+  # get totals
+  cropTimesCoef <- cropTimesCoef %>%
+    mutate(total_landuse_tco2 = rowSums(select(., c(broadleaf_tCO2:suburban_tCO2))))
+  
+  # add ref id back in
+  cropTimesCoef <- bind_cols(landCoverHaAdapt$rcFid_1km
+                             , cropTimesCoef) %>%
+    rename(rcFid_1km = 1)
+  head(cropTimesCoef)
+  
+  ##### field margins #####    
+  # get co2e emissions/ uptake from size of field margins - grass strips
+  # using the middle value from Yang et al. (2019),
+  #  = 1.834 Mg CO2 ha-1 yr-1
+  # note: lots of different estimates exist - from uptake to emissions
+  # multiply by area
+  
+  # get co2e emissions/ uptake from size of field margins - tree strips
+  # use the value from Falloon et al. (2004) for natural BL regen:
+  # 10276 kg co2 (see Google Doc)
+  
+  landCoverHaMargin <- landCoverHaAdapt %>%
+    mutate(fm_kgCo2Ha = (
+      # converts Mg to kg, and uptake
+      (landCoverHaAdapt$flowerMargin_ha * 1.834) / 1000 * -1) +  # if flower
+        (landCoverHaAdapt$treeMargin_ha * 10276) * -1) # if tree
+  head(landCoverHaMargin)
+  
+  ##### hedgerow #####   
+  # using the values from Blair (2021), convert ground area into emissions
+  landCoverHaHedge <- landCoverHaAdapt %>%
+    mutate(emisHedge_tco2e = hedgeAreaHaperKm2 * -9.305)
+  
+  ##### combine ##### 
+  combineEmis <- Reduce(function(x, y) {
+    merged_data <- merge(
+      x, y
+      , all = TRUE
+    )
+    return(merged_data)
+  }, list(cropTimesCoef, landCoverHaMargin, landCoverHaHedge)) %>%
+    dplyr::select(-c(broadleaf_ha: suburban_ha, hedgeAreaHaperKm2)) %>%
+    # create t for kg for fm_kgCo2Ha
+    mutate(fm_tco2 = fm_kgCo2Ha/1000) %>%
+    st_drop_geometry() %>%
+    dplyr::select(-c(fm_kgCo2Ha, flowerMargin_ha, treeMargin_ha)) %>%
+    # final sum
+    mutate('landCoverTotalEmis_tco2' = rowSums(select(., c(total_landuse_tco2, emisHedge_tco2e, fm_tco2)), na.rm = T)) %>%
+    st_as_sf()
+  head(combineEmis)
+  str(combineEmis)
+  attributes(combineEmis$total_landuse_tco2) <- NULL
+  
+  st_write(combineEmis, file.path(savePath, "land_use_emissions.gpkg"), append = F)
+  fwrite(st_drop_geometry(combineEmis)
+         , file.path(savePath, "land_use_emissions.csv")
+         , row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(savePath, "readme_land_use_emissions.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'land_use_emissions' contain information the annual amount of emissions or uptake CO2 per km2, based on underlying land covers. The land cover areas were derived from the 2015 land cover map, countryside survey (field margins), and woody linear features
+
+The columns:
+      'rcFid_1km' = 1 km reference id
+      '[land cover type]_tCO2' = emissions or sequestration (represented by a '-' value) of CO2 that each land cover contributes across a 1 km2 (units: tonnes CO2/km2/yr)
+      'total_landuse_tco2' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on the composition of land covers at 25 m2 (units: tonnes CO2/km2/yr)
+      'emisHedge_tco2e' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on area of hedges (units: tonnes CO2/km2/yr)
+      'fm_tco2' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on area of field margins (units: tonnes CO2/km2/yr)
+      'landCoverTotalEmis_tco2' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on broad land cover categories, field margins, and hedges (units: tonnes CO2/km2/yr)
+Data:
+    units: tonnes CO2/km2/yr 
+    Spatial resolution: 1 km2
+    Spatial extent: GB
+    Temporal coverage: 2015
+    Native projection: 27700")
+  
+  sink(file = NULL)
+  
+}
+
+#### 9 - part9residue ####
+if(part9residue){
+  
+  ## ------------ Notes --------------  ##
+  ## The residue amounts come from WOFOST model output for the most part
+  ## (with the exception of oats and field beans)
+  
+  ## There are six crop residue management options:
+  ## Removed; left untreated in heaps or pits
+  ## Removed; non-forced-aeration compost
+  ## Removed; forced-aeration compost
+  ## Left on field; incorporated or mulch
+  ## Burned (no longer done in the UK)
+  ## Exported off farm
+  ## ------------ ----- --------------  ##
+  
+  # set input location - for land cover
+  currPath <- file.path("./data_in", "land_cover")
+  # results
+  savePath <- "./results/arable"
+  
+  residuePath <- "N:/Projects/AgLand/models/crop_production/potential_production/combined_outputs"
+  # create path to save the means - yearly
+  dir.create(meanResPath <- file.path(residuePath, "means_crop")
+             , showWarnings = F)
+  # create path to save the means - variety
+  dir.create(resPathBroadCrop <- file.path(residuePath, "means_crop", "broad_crop")
+             , showWarnings = F)
+  CropPath <- "./data_in/crops"
+  
+  # import GE 1 km2 crop area for 2015
+  landArea <- st_read(file.path(currPath, "land_cover_table.gpkg"))
+  head(landArea)
+  
+  ##### 9a - create residue functions #####  
+  # create function to produce yearly means from input residue data
+  # from each unique crop variety, get an average value for the five-year span the
+  # data came from (2012 - 2016)
+  aveCropYearFunc <- function(x){
+    
+    # select all files with that crop variety identifier
+    xResList <- resiList[grepl(x, resiList)]
+    # check it is five
+    stopifnot(length(xResList) == 5)
+    
+    # read in
+    varList <- pblapply(xResList, function (y) { fread(y) %>%
+        as.data.frame() %>%
+        dplyr::select(c(pixsn, X, Y
+                        , TAGP,  TWSO, TWLV, TWST, TWRT))})
+    
+    # get the different columns
+    # TAGP
+    TAGPmean <- sapply(varList, function(x) x$TAGP) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWSO
+    TWSOmean <- sapply(varList, function(x) x$TWSO) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWLV
+    TWLVmean <- sapply(varList, function(x) x$TWLV) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWST
+    TWSTmean <- sapply(varList, function(x) x$TWST) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWRT
+    TWRTmean <- sapply(varList, function(x) x$TWRT) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    
+    # combine back into one df
+    meanYearDf <- varList[[1]] %>%
+      dplyr::select(pixsn, X, Y) %>%
+      # bind to obtain yearly means
+      bind_cols(., list(TAGPmean$mean
+                        , TWSOmean$mean
+                        , TWLVmean$mean
+                        , TWSTmean$mean
+                        , TWRTmean$mean)) %>%
+      rename(TAGP = 4
+             , TWSO = 5
+             , TWLV = 6
+             , TWST = 7
+             , TWRT = 8)
+    
+    # save to file
+    fwrite(meanYearDf
+           , file.path(meanResPath, paste0(x, ".csv"))
+           , row.names = F)
+    cat("saved at:", file.path(meanResPath, paste0(x, ".csv")), "\n")
+  }
+  
+  # create function to produce all-variety means from input average annual residue data
+  # from each unique broad crop type, get the average. This will encompass different varieties
+  # for each broad crop type
+  aveCropVarFunc <- function(x){
+    
+    # select all files with that crop variety identifier
+    xResList <- resiList[grepl(x, resiList)]
+    # check names
+    cat(xResList, sep = "\n")
+    
+    # read in
+    varList <- pblapply(xResList, function (y) { fread(y) %>%
+        as.data.frame() %>%
+        dplyr::select(c(pixsn, X, Y
+                        , TAGP,  TWSO, TWLV, TWST, TWRT))})
+    
+    # get the different columns
+    # TAGP
+    TAGPmean <- sapply(varList, function(x) x$TAGP) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWSO
+    TWSOmean <- sapply(varList, function(x) x$TWSO) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWLV
+    TWLVmean <- sapply(varList, function(x) x$TWLV) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWST
+    TWSTmean <- sapply(varList, function(x) x$TWST) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    # TWRT
+    TWRTmean <- sapply(varList, function(x) x$TWRT) %>%
+      as.data.frame() %>%
+      mutate(mean = rowMeans(.[]))
+    
+    # combine back into one df
+    meanVarietyDf <- varList[[1]] %>%
+      dplyr::select(pixsn, X, Y) %>%
+      # bind to obtain yearly means
+      bind_cols(., list(TAGPmean$mean
+                        , TWSOmean$mean
+                        , TWLVmean$mean
+                        , TWSTmean$mean
+                        , TWRTmean$mean)) %>%
+      rename(TAGP = 4
+             , TWSO = 5
+             , TWLV = 6
+             , TWST = 7
+             , TWRT = 8) %>%
+      # calculate total weight of residues for a pixel
+      mutate(total_res_kgha = TWLV + TWST + TWRT)
+    
+    # save to file
+    fwrite(meanVarietyDf
+           , file.path(resPathBroadCrop, paste0(x, "_residues.csv"))
+           , row.names = F)
+    cat("saved at:", file.path(resPathBroadCrop, paste0(x, "_residues.csv")), "\n")
+    
+  }
+  
+  #### 9b - load in crop values ####
+  # list all crop tables available
+  resiList <- list.files(residuePath
+                         , pattern = ".csv$"
+                         , full.names = T)
+  cat(resiList, sep = "\n")
+  
+  # determine all unique crop variety types
+  cropVarUnique <- unique(gsub("^(.+)_2.*", "\\1", basename(resiList)))
+  cat(cropVarUnique, sep = "\n")
+  
+  # create yearly averages using function
+  pblapply(cropVarUnique, aveCropYearFunc)
+  
+  # write readme
+  sink(file = file.path(meanResPath, "readme.txt"))
+  cat("Description of csv files
+  -----------------------------------------------------------
+ 
+  Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+  Date created: 2023-05-03
+  Last update:",  format(Sys.Date()), "
+
+  Files in this directory contain yearly average properties of a certain crop variety type for a certain pixel. 
+  Five years were used to get the yearly average: 2012 - 2016, with each individual year initially providing a single value for each property  
+  The names of each file indicates the broad crop type and its variety number, in the form '[cropType]_[VarietyType].csv' 
+      where:
+        - [cropType] indicates the broad crop type
+        - [VarietyType] indicates a crop's variety number
+
+  The columns:
+        'pixsn' = pixel identifier (running number)
+        'X' = X-coordinate of 1 km pixel centre (EPSG: 27700)
+        'Y' = Y-coordinate of 1 km pixel centre (EPSG: 27700)
+        'TAGP' = Total above ground production (dry weight (Kg ha-1))
+        'TWSO' = Total storage organ weight (dry weight (Kg ha-1))
+        'TWLV' = Total weight of leaves (dry weight (Kg ha-1))
+        'TWST' = Total weight of stems (dry weight (Kg ha-1))
+        'TWRT' = Total weight of roots (dry weight (Kg ha-1))
+        
+  Data:
+      Units: dry weight (Kg ha-1) (for the non-coordinate columns)
+      Spatial resolution: 1 km2
+      Spatial extent: GB
+      Temporal coverage: 2012 - 2016
+      Native projection: 27700")
+  
+  sink(file = NULL)
+  
+  #### 9c - get average for a particular crop type per pixel, per ha ####
+  
+  # list all crop tables available - these have already been averaged across five years
+  resiList <- list.files(meanResPath
+                         , pattern = ".csv$"
+                         , full.names = T)
+  
+  # determine all unique broad crop types
+  cropVarUnique <- unique(gsub("^(.+)_.*", "\\1", basename(resiList)))
+  cat(cropVarUnique, sep = "\n")
+  
+  # create yearly averages using function
+  pblapply(cropVarUnique, aveCropVarFunc)
+  
+  # write readme
+  sink(file = file.path(resPathBroadCrop, "readme.txt"))
+  cat("Description of csv files
+  -----------------------------------------------------------
+ 
+  Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+  Date created: 2023-05-03
+  Last update:",  format(Sys.Date()), "
+
+  Files in this directory contain average broad crop properties for a certain pixel. 
+  Different number of crop varieties were used to get the average for each property  
+  The names of each file indicates the broad crop type and its amount of material/residue, in the form '[cropType]_residues.csv' 
+      where:
+        - [cropType] indicates the broad crop type
+
+  The columns:
+        'pixsn' = pixel identifier (running number)
+        'X' = X-coordinate of 1 km pixel centre (EPSG: 27700)
+        'Y' = Y-coordinate of 1 km pixel centre (EPSG: 27700)
+        'TAGP' = Total above ground production (dry weight (Kg ha-1))
+        'TWSO' = Total storage organ weight (dry weight (Kg ha-1))
+        'TWLV' = Total weight of leaves (dry weight (Kg ha-1))
+        'TWST' = Total weight of stems (dry weight (Kg ha-1))
+        'TWRT' = Total weight of roots (dry weight (Kg ha-1))
+        'total_res_kgha' = total weight of residues (i.e. all material minus the storage organ weight) (dry weight (Kg ha-1))
+        
+  Data:
+      Units: dry weight (Kg ha-1) (for the non-coordinate columns)
+      Spatial resolution: 1 km2
+      Spatial extent: GB
+      Temporal coverage: 2012 - 2016
+      Native projection: 27700")
+  
+  sink(file = NULL)
+  
+  #### 9d - use area to determine total residue in a 1 km2 ####
+  
+  # check row sums
+  cropTableSum <- landArea %>%
+    mutate(crop_area = rowSums(dplyr::select(.[,,drop = T], c(winterwheat_ha:sugarbeet_ha)), na.rm = T))
+  head(cropTableSum)
+  
+  # select just crops
+  arableSelection <- landArea  %>%
+    st_drop_geometry() %>%
+    dplyr::select(c(winterwheat_ha:sugarbeet_ha))
+  
+  # list all residue tables available - these have already been averaged 
+  resiList <- list.files(resPathBroadCrop
+                         , pattern = ".csv$"
+                         , full.names = T)
+  cat(resiList, sep = "\n")
+  
+  # loop through the files, extracting only the total residue amount
+  # resave, in a new list
+  newResiList <- list()
+  for(i in 1:length(resiList)){
+    
+    # get crop name
+    cropNm <- gsub("^(.+)_r.*", "\\1", basename(resiList[[i]]))
+    
+    newResiList[[i]] <- fread(resiList[[i]]) %>% as.data.frame() %>%
+      dplyr::select(c(pixsn, X, Y
+                      , total_res_kgha)) %>%
+      rename(!!cropNm := total_res_kgha)
+  }
+  
+  # merge all the final residue dataframes together
+  allResidues <- purrr::reduce(newResiList, merge)
+  # rename, to indicate residues
+  names(allResidues)[4:ncol(allResidues)] <- paste0(names(allResidues)[4:ncol(allResidues)], "_resKgHa")
+  allResidues <- allResidues %>%
+    mutate(X = as.numeric(X),
+           Y = as.numeric(Y)) %>%
+    mutate(rcFid_1km = paste(round(X, 0), round(Y, 0), sep = "_")) %>%
+    dplyr::select(-c(X, Y, pixsn))
+  head(allResidues)
+  
+  # merge residues with crop composition 
+  ## get centroid of crop table
+  cropCentroid <- landArea %>%
+    st_centroid() 
+  head(cropCentroid)
+  
+  ## merge the centroid point crop df with residues df
+  cropAndResidues <- merge(cropCentroid
+                           , allResidues
+                           , by = "rcFid_1km"
+                           , all = T) %>%
+    # remove excess coords
+    dplyr::select(-c(x, y, x_y)) %>%
+    st_drop_geometry()
+  head(cropAndResidues)
+  class(cropAndResidues)
+  
+  # get the total amount of residues per pixel
+  # based on area of crop, and amount of average residues from the crop model
+  names(cropAndResidues)
+  
+  ## get the positions of the columns
+  startCol <- which(names(cropAndResidues) == "winterwheat_ha")
+  endCol <- which(names(cropAndResidues) == "sugarbeet_ha")
+  
+  # create empty list
+  resDfList <- list()
+  
+  for(i in startCol:endCol){
+    
+    # remove "_ha", to get name
+    readyName <- sub("_ha", "", names(cropAndResidues)[[i]])
+    
+    # use the column name to get residue and area
+    resDf <- cropAndResidues[, grepl(readyName, names(cropAndResidues))] %>%
+      as.data.frame() %>% st_drop_geometry()
+    cat(names(resDf), sep = " | ")
+    
+    # only continue if there are two cols: crop area and residue
+    if(ncol(resDf) == 2){
+      
+      cat(readyName, "| extracted; OK\n")
+      
+      # multiply the two columns
+      resDfList[[i]] <- apply(resDf, 1, prod, na.rm=TRUE)
+      
+    } else {
+      
+      # if not from the crop model, equation from Table 2.1 (Eq. 2.2.2) in CFT is required
+      # yield for the equation comes from https://ahdb.org.uk/news/top-of-the-crops - the top 25%
+      
+      cat(readyName, "| needed another value; OK\n")
+      
+      if(readyName == "oats"){
+        
+        # rResiduesKgHa Total amount of residues [kg]
+        # rBelow Amount of below-ground residues [kg]
+        # rAbove Amount of above-ground residues [kg]
+        
+        rAbove <- 7.5 * 0.89 * 0.91 + 0.89
+        rBelow <- rAbove * 0.25
+        rResiduesKgHa <- rAbove + rBelow
+        
+        # combine area and average residue amount
+        resDf <- bind_cols(resDf, rResiduesKgHa)
+        # multiply the two columns
+        resDfList[[i]] <- apply(resDf, 1, prod, na.rm=TRUE)
+        
+      }
+      
+      if(readyName == "fieldbeans"){
+        
+        # rResiduesKgHa Total amount of residues [kg]
+        # rBelow Amount of below-ground residues [kg]
+        # rAbove Amount of above-ground residues [kg]
+        
+        rAbove <- 4.4 * 0.9 * 0.36 + 0.68
+        rBelow <- rAbove * 0.19
+        rResiduesKgHa <- rAbove + rBelow
+        
+        # combine area and average residue amount
+        resDf <- bind_cols(resDf, rResiduesKgHa)
+        # multiply the two columns
+        resDfList[[i]] <- apply(resDf, 1, prod, na.rm=TRUE)
+      }
+    }
+  }
+  
+  # combine the outcome
+  # merge all the final residue dataframes together
+  allResidueskgKm2 <- do.call(cbind, resDfList) %>% as.data.frame() %>%
+    bind_cols(cropAndResidues %>% dplyr::select(c(rcFid_1km)), .)
+  names(allResidueskgKm2)[2:11] <- paste0(names(cropAndResidues)[startCol:endCol], "_totalResid")
+  names(allResidueskgKm2) <- sub("_ha", "", names(allResidueskgKm2))
+  head(allResidueskgKm2)
+  
+  #### 9e - load residue/crop parameters, and residue amounts ####
+  ## ------------ Notes --------------  ##
+  ## the residue parameters come from the CFT values currently
+  ## ------------ ----- --------------  ##
+  
+  residParam <- read_excel(file.path(CropPath, "residue_parameters.xlsx"), sheet = "resid_data")
+  head(residParam)
+  cropParam <- read_excel(file.path(CropPath, "residue_parameters.xlsx"), sheet = "crop_data")
+  head(cropParam)
+  
+  ## ------------ Notes --------------  ##
+  ## the residue amounts were calculated
+  ## ------------ ----- --------------  ##
+  
+  # amounts
+  residAmounts <- allResidueskgKm2 
+  
+  ## get aboveground residues by using the ratio of below and above ground (i.e.'ratio_blw:abg')
+  ## this is due to only aboveground residues 
+  ## loop through crops individually
+  rAbove <- list()
+  rBelow <- list()
+  
+  nContentinResid <- list()
+  
+  for(i in 2:ncol(residAmounts)){
+    
+    # extract column and name
+    newCol <- residAmounts[, i] %>% as.data.frame()
+    newNm <- gsub("_totalResid", "", names(residAmounts)[i])
+    # use name to get parameters
+    newParas <- cropParam %>%
+      filter(grepl(newNm, Crop)) %>%
+      dplyr::select("ratio_blw:abg")
+    
+    # multiply column by amount
+    rAbove[[i]] <- newCol * as.numeric(1 - newParas)
+    rBelow[[i]] <- newCol * as.numeric(newParas)
+    
+    # get N content of all residues (required if mulching)
+    # use name for N parameters
+    # see Eq 2.2.6 in CFT
+    nContentParas <- cropParam %>%
+      filter(grepl(newNm, Crop)) %>%
+      dplyr::select(c(Abg_N_frac, Blw_N_frac))
+    nContentAbove <- rAbove[[i]] * as.numeric(nContentParas[1])
+    nContentBelow <- rBelow[[i]] * as.numeric(nContentParas[2])
+    nContentinResid[[i]] <- nContentAbove + nContentBelow
+    
+  }
+  head(nContentParas)
+  
+  # merge all the final residue dataframes together
+  ## above
+  rAbovekgKm2 <- do.call(cbind, rAbove[2:11]) %>% as.data.frame() %>%
+    bind_cols(residAmounts %>% dplyr::select(c(rcFid_1km)), .)
+  ## below
+  rBelowkgKm2 <- do.call(cbind, rBelow[2:11]) %>% as.data.frame() %>%
+    bind_cols(residAmounts %>% dplyr::select(c(rcFid_1km)), .)
+  # change names
+  names(rAbovekgKm2) <- names(rBelowkgKm2) <- names(residAmounts)
+  
+  # merge N content residues together
+  nContentinResid <- do.call(cbind, nContentinResid[2:11]) %>% as.data.frame() %>%
+    bind_cols(residAmounts %>% dplyr::select(c(rcFid_1km)), .) %>%
+    replace(is.na(.), 0)
+  names(nContentinResid) <- gsub("_totalResid", "_residN_kg", names(residAmounts))
+  head(nContentinResid)
+  
+  #### 9f - calculate emissions based on different management ####
+  # use the rAbove values and multiply them by management type coefficient
+  ## get total km2 residue amounts
+  rAbovekgKm2Totals <- rAbovekgKm2 %>%
+    mutate(totalResidkgKm = rowSums(.[, 2:11], na.rm = T))
+  head(rAbovekgKm2Totals)
+  
+  # create empty list to store different emissions
+  residEmisCH4 <- list()
+  residEmisN2O <- list()
+  residEmisCombCO2e <- list()
+  
+  # loop through the possible treatments, ignoring burning (which is no longer done in the UK)
+  for(i in 1:nrow(residParam)){
+    # get name
+    nm <- residParam$treatment[[i]]
+    print(nm)
+    
+    # get CH4 and N2O coefs
+    ch4 <- as.numeric(residParam[i, "ch4"])
+    n2o <- as.numeric(residParam[i, "n2o"])
+    
+    residEmisCH4[[i]] <- rAbovekgKm2Totals$totalResidkgKm * ch4
+    residEmisN2O[[i]] <- rAbovekgKm2Totals$totalResidkgKm * n2o
+    residEmisCombCO2e[[i]] <- residEmisCH4[[i]] + residEmisN2O[[i]]
+  }
+  
+  # merge all the final residue dataframes together
+  ## ch4 (already converted to CO2e)
+  residEmisCH4 <- do.call(cbind, residEmisCH4) %>% as.data.frame() %>%
+    bind_cols(rAbovekgKm2Totals %>% dplyr::select(c(rcFid_1km, totalResidkgKm)), .)
+  ## n2o (already converted to CO2e)
+  residEmisN2O <- do.call(cbind, residEmisN2O) %>% as.data.frame() %>%
+    bind_cols(rAbovekgKm2Totals %>% dplyr::select(c(rcFid_1km, totalResidkgKm)), .)
+  ## combined n2o and ch4 (already converted to CO2e)
+  residEmisCombCO2e <- do.call(cbind, residEmisCombCO2e) %>% as.data.frame() %>%
+    bind_cols(rAbovekgKm2Totals %>% dplyr::select(c(rcFid_1km, totalResidkgKm)), .)
+  # change names
+  names(residEmisCH4)[3:8] <- names(residEmisN2O)[3:8] <- names(residEmisCombCO2e)[3:8] <- paste0(residParam$treatment, " (100%)")
+  head(residEmisCH4)
+  
+  # save
+  tic("writing...")
+  fwrite(residEmisCombCO2e, file.path(savePath, "residEmisComb_kgCO2e.csv")
+         , row.names = F)
+  # combine back to spatial
+  residEmisCombCO2eSpat <- landArea %>% as.data.frame() %>%
+    dplyr::select(rcFid_1km) %>%
+    merge(., residEmisCombCO2e, by = "rcFid_1km", all = T)
+  st_write(residEmisCombCO2eSpat, file.path(savePath, "residEmisComb_kgCO2e.gpkg"), append = F)
+  toc()
+  
+  # write readme
+  sink(file = file.path(savePath, "readme_residEmisComb_kgCO2e.txt"))
+  cat("Description of 'residEmisCombCO2e' files
+Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+Files in this directory containing 'residEmisComb_kgCO2e' show emissions (in kg CO2e) produced from different residue managements.
+
+The columns:
+      'rcFid_1km' = 1 km2 pixel identifier. Coordinate of 1 km pixel centre (EPSG: 27700)
+      '[managementType] (100%)' indicates the emissions produced, in kg CO2e, when all residues within a km2 are all treated the same way, with the management type indicated in the column header
+        
+Data:
+    Units: kg CO2e (produced by residue management)
+    Spatial resolution: 1 km2
+    Spatial extent: GB
+    Temporal coverage: 2015/2016
+    Native projection: 27700")
+  sink(file = NULL)
+}
+
+#### 10 - part10onfarmenergy ####
+if(part10onfarmenergy){
+  
+  currPath <- file.path("data_in", "land_cover")
+  savePath <- file.path("results", "land_use")
+  
+  ##### 10a - on-farm fuel use #####
+  
+  # load in fuel use
+  fuelUse <- fread("data_in/energy/fuel_use.csv") %>%
+    # remove first row
+    slice(-1) %>%
+    # remove columns that being with 'v' - these are the confidence intervals
+    dplyr::select(-c(starts_with('v'), Observations)) %>%
+    # rename for clarity
+    rename(road_fuel_l = "Road fuel (l)*"
+           , red_diesel_l = "Red diesel (l)"
+           , red_diesel_con_l = "Red diesel used by contractors (l)"
+           , lpg_kg = "LPG (kg)"
+           , kerosene_l = "Kerosene (l)"
+           , elec_units = "Electricity (units)"
+           , heating_oil_l = "Heating oil (l)") %>%
+    # convert amounts to numeric
+    mutate(across(2:8, ~as.numeric(.))) %>%
+    replace(is.na(.), 0) %>%
+    # sum red diesel
+    mutate(red_dies_l = red_diesel_l + red_diesel_con_l) %>%
+    # add heating oil to kerosene
+    mutate(kerosene_l = kerosene_l + heating_oil_l) %>% 
+    dplyr::select(-c(red_diesel_l, red_diesel_con_l, heating_oil_l)) %>% as.data.frame()
+  head(fuelUse)
+  
+  # get a list of all the relevant fuel types
+  names(fuelUse)[2:ncol(fuelUse)]
+  fuels <- c("Diesel"
+             , "Petrol"
+             , "LPG"
+             , "Burning Oil (kerosene)"
+             , "electricity"
+             , "Gas Oil (red diesel)")
+  
+  # make long
+  fuelUse <- fuelUse %>%
+    pivot_longer(cols = !Farm_type)
+  head(fuelUse)
+  
+  ## ------------ Notes --------------  ##
+  ## 'Road fuel' consists of derv (diesel oil for road vehicles) and petrol
+  ## ------------ ----- --------------  ##
+  
+  #### 10b - import fuel emissions table ####
+  
+  ## ------------ Notes --------------  ##
+  ## the amount of CO2e emitted when using different fuels comes from 
+  ## Greenhouse gas reporting: Conversion Factors 2019
+  ## (https://assets.publishing.service.gov.uk/government/uploads/system/uploads/attachment_data/file/806025/Conversion-Factors-2019-Condensed-set-for-most-users.xls)
+  ## the imported table list the different fuels, and kg CO2e emissions based on the use
+  ## of one unit. For example, as seen in 'head(energyUseEFs)', one tonne of CNG being used
+  ## would emit 2542.04 kg CO2e
+  ## electricity use was derived from https://webarchive.nationalarchives.gov.uk/ukgwa/20130403061708mp_/http://archive.defra.gov.uk/environment/business/reporting/pdf/101006-guidelines-ghg-conversion-factors.xls (Hill et al., 2011)
+  ## ------------ ----- --------------  ##
+  
+  energyUseEFs <- fread("data_in/energy/emis_factors.csv") %>% as.data.frame()
+  head(energyUseEFs)
+  energyUseEFs <- energyUseEFs %>%
+    # interested in kg co2e
+    dplyr::select(Fuel, Unit, "kg CO2e")
+  head(energyUseEFs)
+  
+  # refine to only fuels listed in fuelUse.csv
+  ## check which are match
+  names(fuelUse)
+  unique(energyUseEFs$Fuel)
+  ## get fuel factors (non-elec)
+  energyEFsShort <- energyUseEFs %>%
+    filter(Fuel %in% c("LPG", "Petrol (average biofuel blend)", "Diesel (average biofuel blend)"
+                       , "Gas oil", "Burning oil"))
+  ### for diesel, petrol, burning oil (kerosene), heating oil, and gas oil (red diesel), get litres
+  energyEFs <- bind_rows(energyEFsShort %>%
+                           filter(Fuel %in% c("Petrol (average biofuel blend)", "Diesel (average biofuel blend)"
+                                              , "Gas oil", "Burning oil"), 
+                                  Unit == "litres")
+                         ### and kg (convert from tonnes) for LPG
+                         , energyEFsShort %>%
+                           filter(Fuel == "LPG" 
+                                  , Unit == "tonnes")) %>%
+    # convert amounts to numeric
+    mutate(across(3, ~as.numeric(.)))
+  energyEFs$kgCO2e <- ifelse(energyEFs$Fuel == "LPG", energyEFs$`kg CO2e` / 1000, energyEFs$`kg CO2e`)
+  # change the unit from tonnes to kg
+  energyEFs$Unit[energyEFs$Unit == "tonnes"] <- "kg"
+  energyEFs <- energyEFs %>% dplyr::select(-"kg CO2e")
+  head(energyEFs)
+  ## for road fuel, take an average of diesel and petrol
+  energyEFs <- bind_rows(energyEFs, data.frame(Fuel = "road_fuel_l"
+                                               , Unit = "litres"
+                                               , kgCO2e = mean(c(2.5941, 2.2090))))
+  
+  ## get fuel factors (electricity) - 2008 value in Hill et al., 2011
+  energyEFs <- bind_rows(energyEFs, data.frame(Fuel = "Electiricty"
+                                               , Unit = "kWh"
+                                               , kgCO2e = 0.54522))
+  head(energyEFs)
+  str(energyEFs)
+  # tidy
+  rm(energyEFsShort, energyUseEFs)
+  
+  ## rename to match fuel use
+  energyEFs$fuelMatch <- c("kerosene_l", "diesel", "red_dies_l", "petrol", "lpg_kg", "road_fuel_l", "elec_units")
+  head(energyEFs, 7)
+  
+  #### 10c - multiply volume used per hectare by emissions factors ####
+  # merge both tables
+  fuelMerge <- merge(energyEFs, fuelUse
+                     , by.y = "name"
+                     , by.x = "fuelMatch"
+                     , all = F) %>%
+    # multiply volume and factor
+    mutate(kgCO2eHa = kgCO2e * value) %>%
+    # sum each farm type to get a fuel use total CO2e per farm type
+    group_by(Farm_type) %>%
+    summarise(totalkgCO2eHa = sum(kgCO2eHa)) %>%
+    as.data.frame()
+  head(fuelMerge)
+  
+  #### 10d - determine hectarage of all animals ####
+  
+  ## ------------ Notes --------------  ##
+  ## 'cereals' will account for all arable hectares
+  ## livestock farming values will be divided based on the number of animals
+  ## in a km2, and the recommended stocking rate from Nix (2021)
+  ## ------------ ----- --------------  ##
+  
+  # read in anmial numbers
+  animals <- st_read("data_in/animals/all_animals_1km.gpkg")
+  head(animals)
+  names(animals)
+  ## sum them, according to categories in Nix
+  animals2 <- animals %>% st_drop_geometry() %>%
+    ### dairy
+    mutate(diary = rowSums(select(., contains("airy")))) %>%
+    dplyr::select(-contains("airy")) %>% # drop summed
+    ### In—calf heifers
+    mutate(In_calf_heifs = rowSums(select(., contains("eifers")))) %>%
+    dplyr::select(-contains("eifers")) %>%# drop summed
+    ### In—calf heifers
+    mutate(bull = rowSums(select(., contains("ulls")))) %>%
+    dplyr::select(-contains("ulls")) %>% # drop summed
+    ### beef
+    mutate(beuf = rowSums(select(., contains("eef")))) %>%
+    dplyr::select(-contains("eef")) %>% # drop summed
+    ### Other cattle 0–1 years old
+    mutate(cow0_1years = rowSums(select(., c(contains(c("calves"
+                                                        , "6...9.months", "0...3.months", "9...12.months", "3...6.months")))))) %>%
+    dplyr::select(-c(contains(c("calves"
+                                , "6...9.months", "0...3.months", "9...12.months", "3...6.months")))) %>% # drop summed
+    ### Other cattle 1–2 years old
+    mutate(cow1_2years = rowSums(select(., c(contains(c("12...15.months", "15...18.months", "18...21.months", "21...24.months")))))) %>%
+    dplyr::select(-c(contains(c("12...15.months", "15...18.months", "18...21.months", "21...24.months")))) %>% # drop summed
+    ### Other cattle >2 years old
+    mutate(cowabove2years = rowSums(select(., c(contains("..."))))) %>%
+    dplyr::select(-c(contains("..."))) %>%
+    ### sheep
+    mutate(sheep = rowSums(select(., contains(c("ewes", "rams", "lambs"))))) %>%
+    dplyr::select(-contains(c("ewes", "rams", "lambs"))) %>% # drop summed
+    ### remove non-totals for sheep, and remove horses
+    dplyr::select(-c(contains(c("lambs", "rams", "ewe", "horse", "region")))) %>%
+    rename(dairy = diary)
+  head(animals2)
+  names(animals2)
+  
+  # create Grazing Livestock Unit (GLU) table per animal group
+  GLUanimals <- c("In_calf_heifs", "bull", "dairy", "beuf", "cow0_1years"
+                  , "cow1_2years", "cowabove2years", "sheep", "poultry", "all_pigs")
+  GLUvalue <- c(In_calf_heifs = 0.8
+                , bull = 0.65
+                , dairy = 1
+                , beuf = 0.75
+                , cow0_1years = 0.34
+                , cow1_2years = 0.65
+                , cowabove2years = 0.8
+                , sheep = 0.08
+                , poultry = 1/2500 # gov.uk welfare poultry recommendations https://www.gov.uk/government/publications/poultry-on-farm-welfare/poultry-welfare-recommendations
+                , all_pigs = 1/30 # according to https://redtractorassurance.org.uk/standards/outdoor-pigs/
+  )
+  animalGLU <- bind_cols(animal_type = GLUanimals, GLU = GLUvalue)
+  animalGLU
+  
+  # determine hectares of each animal group
+  ## rearrange columns to match animal list categories
+  animals3 <- setcolorder(animals2, as.character(animalGLU$animal_type))
+  ## check column headers and row names match
+  stopifnot(names(animals3)[1:(ncol(animals3)-1)] == animalGLU$animal_type)
+  head(animalGLU)
+  
+  ## use GLUs to multiply - transpose before and after to match vector
+  gluRecommHect <- t(t(animals3[, c(1:(ncol(animals3)-1))]) %>%
+                       replace(is.na(.), 0) * animalGLU$GLU) %>%
+    as.data.frame() %>%
+    bind_cols(rcFid_1km = animals3$rcFid_1km, .)
+  head(gluRecommHect)    
+  head(animalGLU)
+  head(animals3)
+  
+  ##### 10e - determine hectares of different farm types #####
+  ## ------------ Notes --------------  ##
+  ## the hectare area required for each animals category and their quantity
+  ## needs to be separated into Robust Farm Types
+  ## ------------ ----- --------------  ##
+  
+  gluRecommHect2 <- gluRecommHect %>%
+    # all non-dairy cattle will be classed as 'Lowland Grazing Livestock' 
+    mutate(lowlandGrazing = rowSums(select(., c(bull, beuf, cow0_1years, cow1_2years, cowabove2years)))
+           , dairy = rowSums(select(., c(dairy, In_calf_heifs)))) %>%
+    dplyr::select(-c(bull, beuf, cow0_1years, cow1_2years, cowabove2years, In_calf_heifs)) %>%
+    # rename the rest
+    rename(
+      ## sheep become 'LFA Grazing Livestock'
+      LFAGrazing = sheep
+      , pigs = all_pigs
+      , poultry = poultry)
+  head(gluRecommHect2)
+  
+  ## adjust total hectares by comparison with lcm grassland area 
+  gluRecommHect3 <- gluRecommHect2 %>%
+    # all non-dairy cattle will be classed as 'Lowland Grazing Livestock' 
+    mutate(totalHectares = rowSums(select(., c(LFAGrazing:lowlandGrazing))))
+  head(gluRecommHect3)
+  
+  # compare against actually grassland from LCM
+  lcm <- st_read("data_in/land_cover/land_cover_table.gpkg")
+  names(lcm)
+  lcmGrass <- lcm %>%
+    mutate(totalGrassHa = rowSums(select(.[,,drop = T], c(neutral_grass_ha, calc_grass_ha, acid_grass_ha
+                                                          , heather_grass_ha, improved_grass_ha)))) 
+  
+  # make all arable into 'cereals' - except potatoes
+  lcmGrass <- lcmGrass %>%
+    replace(is.na(.), 0) %>%
+    dplyr::select(-potato_ha) %>%
+    mutate(cereal_ha = rowSums(.[, which(colnames(lcmGrass) == "winterwheat_ha"):which(colnames(lcmGrass) == "sugarbeet_ha")
+                                 , drop=TRUE], na.rm = TRUE))
+  
+  # merge animals and grass
+  lcmGrassAnim <- merge(gluRecommHect3, lcmGrass %>% st_drop_geometry(), by = "rcFid_1km")
+  head(lcmGrassAnim)
+  
+  # if the total area required by all the animals is higher that the grass land area identified in the lcm, 
+  # adjust all hectarages by the multiplied difference
+  hectTooHigh <- lcmGrassAnim %>%
+    filter(totalHectares > totalGrassHa) %>%
+    # get magnitude difference
+    mutate(magDiff = totalGrassHa/totalHectares) %>%
+    # just each animal hectares by that proportion
+    mutate(across(LFAGrazing:lowlandGrazing, ~ . * magDiff)) %>%
+    # recalculate total hectares - it should match grass hectares
+    mutate(totalHectares = rowSums(select(., c(LFAGrazing:lowlandGrazing))))
+  head(hectTooHigh)
+  
+  # combine back with rest
+  finalHect <- bind_rows(hectTooHigh
+                         , lcmGrassAnim %>%
+                           filter(totalHectares <= totalGrassHa) %>% 
+                           dplyr::select(c(rcFid_1km:totalHectares, cereal_ha, totalGrassHa))) 
+  head(finalHect)
+  
+  ##### 10f - get emissions #####
+  ## ------------ Notes --------------  ##
+  ## the adjusted hectarage of each animal group can now be multipled by the emission
+  ## factors that that type of farm typical uses (from 'fuelMerge')
+  ## ------------ ----- --------------  ##
+  
+  # change fuelMerge names
+  fuelMerge$farm <- ifelse(grepl("LFA", fuelMerge$Farm_type), "LFAGrazing"
+                           , ifelse(grepl("Lowland", fuelMerge$Farm_type), "lowlandGrazing"
+                                    , ifelse(grepl("ereal", fuelMerge$Farm_type), "cereal_ha"
+                                             , tolower(fuelMerge$Farm_type))))
+  # match column and row names
+  finalHect2 <- finalHect %>% 
+    relocate(fuelMerge$farm)
+  head(finalHect2)
+  # ensure fuelmerge and final hectarage in same order
+  stopifnot(names(finalHect2)[1:nrow(fuelMerge)] == fuelMerge$farm)
+  
+  ## use fuelMerge to multiply - transpose before and after to match vector
+  emissionsFuel <- t(t(finalHect2[, c(1:nrow(fuelMerge))]) %>%
+                       replace(is.na(.), 0) * fuelMerge$totalkgCO2eHa) %>%
+    bind_cols(., rcFid_1km = finalHect2$rcFid_1km) %>%
+    as.data.frame() %>%
+    # rename, making units known
+    rename_with(~paste0(., "_kgCO2e"), 1:6) %>%
+    # get total in kg CO2e
+    mutate(totalkgCO2e = rowSums(select(., c(1:6)))) %>%
+    # convert to tCO2e
+    mutate(Fuel_tCO2e = totalkgCO2e/1000)
+  head(emissionsFuel)
+  
+  # make spatial again
+  emissionsFuelSpat <- merge(lcmGrass %>% dplyr::select(rcFid_1km)
+                             , emissionsFuel
+                             , by = "rcFid_1km")
+  str(emissionsFuelSpat)
+  
+  ##### 10g - energy use for processing potatoes #####
+  # Farmers Weekly suggests (based on AHDB data) that average crop yields
+  # for potatoes are 41.7 t/ha, with a maximum yield of 80 t/ha. 
+  # According to AHDB, C footprints are: 
+  # 45.4 + 39.2 + 30.77 for all the different stages of potato storage (per t)
+  # this equals: 115.37 kgCO2e/tonne
+  # assuming each ha produces 41.7 t, each ha growing potatoes = 4810.929 kg CO2e
+  
+  # get potato column
+  crop_pot <- lcm %>%
+    dplyr::select(rcFid_1km, potato_ha)
+  # times by above emissions amount
+  crop_pot <- crop_pot %>%
+    mutate(potatoEmis_kgco2e = potato_ha * 4810.929)
+  
+  # add to final df
+  emissionsFuelSpat <- emissionsFuelSpat %>%
+    merge(., crop_pot %>% st_drop_geometry() %>% dplyr::select(-potato_ha)) %>%
+    # get total in kg CO2e
+    mutate(totalkgCO2e = totalkgCO2e + potatoEmis_kgco2e) %>%
+    # convert to tCO2e
+    mutate(Fuel_tCO2e = totalkgCO2e/1000)
+  head(emissionsFuelSpat)
+  
+  # save totals file
+  st_write(emissionsFuelSpat, file.path(savePath, "fuel_emissions.gpkg"), append = F)
+  fwrite(st_drop_geometry(emissionsFuelSpat)
+         , file.path(savePath, "fuel_emissions.csv")
+         , row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(savePath, "readme_fuel_emissions.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'fuel_emissions' contain information the annual amount of emissions of CO2 per km2 due to on-farm fuel use, based on underlying land covers, and animal numbers and their recommended hectarage. The land cover areas were derived from the 2015 land cover map.
+The amount required to process potatoes is also included.
+
+The columns:
+      'rcFid_1km' = 1 km reference id
+      '[land cover type]_kgCO2e' = emissions of CO2 that each land cover contributes across a 1 km2 based on its fuel use (units: kg CO2/km2/yr)
+      'totalkgCO2e' = total emissions of CO2 for a 1 km2, based on on-farm fuel use (units: kg CO2/km2/yr)
+      'Fuel_tCO2e' = total emissions of CO2 for a 1 km2, based on on-farm fuel use (units: t CO2/km2/yr)
+      
+Data:
+    units:  tonnes CO2/km2/yr ('Fuel_tCO2e')
+            kg CO2/km2/yr ('[land cover type]_kgCO2e')
+    Spatial resolution: 1 km2
+    Spatial extent: GB
+    Temporal coverage: 2015
+    Native projection: 27700")
+  sink(file = NULL)
+  
+}
+
+#### 11 - part11combineemissions ####
+if(part11combineemissions){
+  
+  # stop("part11")
+
+  # griddf = gridAnimals
+  # rSel = entFerm
+  # finalCol = "kgCO2e_entferm"
+  # colofInterest = "kgCO2.50pcScen"
+  
+  # create a tranposed multiply function
+  ## run it through a function, extracting one region at a time
+  regionsTranspose <- function(griddf = "x"
+                               , rSel = "x"
+                               , finalCol = "y"
+                               , colofInterest = "z"){
+    
+    ## get all different possible regions
+    ukRegionsPossible <- unlist(unique(griddf %>% st_drop_geometry() %>%
+                                         dplyr::select(region)) %>% as.vector()) %>% as.character()
+    # print(ukRegionsPossible)
+    
+    x <- ukRegionsPossible[[1]]
+    
+    # split by regions current region
+    regSplit <- pblapply(ukRegionsPossible, function(x){
+      cat(x, "| ")
+      currRegion <- x
+      # use region to extract from over all grid
+      regionGrid <- griddf %>% st_drop_geometry() %>%
+        filter(region == currRegion)
+      head(regionGrid)
+      
+      # use the same information for the N excrete grid, but add 'All' as well
+      regionSelect <- rSel %>% 
+        filter(UK.Region %in% c(currRegion, "All"))
+      head(regionSelect)
+      
+      # ensure lengths match
+      stopifnot((ncol(regionGrid)-2) == nrow(regionSelect))
+      
+      # ensure colnames of the spatial grid and row names of the amounts match
+      ## ensure that across and down are in the same positions,
+      ## otherwise change their positions
+      if(identical(
+        c(names(regionGrid)[3:(ncol(regionGrid))])
+        , c(regionSelect$animal)
+        )
+        ){
+        regionalMix <- regionSelect
+        cat("all names match\n")
+        
+      } else {
+        
+        # see if any names are not present
+        wx <- colnames(regionGrid)[!which(colnames(regionGrid) %in% regionSelect$animal)]
+        stopifnot(length(wx) == 0)
+        
+        regionalMix <- regionSelect[match(names(regionGrid)[3:(ncol(regionGrid))]
+                                          , regionSelect$animal), ]   
+        
+        # recheck - identical?
+        stopifnot(identical(
+          c(names(regionGrid)[3:(ncol(regionGrid))])
+          , c(regionalMix$animal)
+          ))
+        cat("names match after reshuffle\n")
+      }
+      head(regionalMix)
+      
+      # multiply the animals in that region by their emissions
+      ## shorten regional animals emissions
+      regionalMix0 <- regionalMix %>% as.data.frame()
+      regionalMix0[is.na(regionalMix0)] <- 0
+      head(regionalMix0)
+      
+      # shorten the animal numbers
+      anr <- regionGrid %>%
+        dplyr::select(-c(rcFid_1km, region)) %>%
+        st_drop_geometry()
+      names(anr)
+      
+      head(regionGrid %>%
+             dplyr::select(poultry_per_km), n = 100)
+      
+      # remove horses / goats
+      anr <- anr %>%
+        dplyr::select(-c(contains(c("horses", "goats"))))
+      names(anr)
+      regionalMix0 <- regionalMix0 %>%
+        filter(!grepl(paste(c("horses", "goats"), collapse = "|")
+                      , animal))
+      
+      stopifnot(length(regionalMix0$animal[which(!regionalMix0$animal %in% names(anr))]) == 0)
+      
+      # get index of column of interest
+      coltoAnalyse <- which(names(regionalMix0) == colofInterest)
+      # multiply for result
+      trya <- as.matrix(anr)
+      dim(trya)
+      dim(regionalMix0 %>%
+            dplyr::select(all_of(coltoAnalyse)) %>%
+            as.vector() %>%
+            unlist() %>%
+            as.data.frame())
+      anrTimes <- as.matrix(anr) %*% diag(regionalMix0 %>%
+                                            dplyr::select(all_of(coltoAnalyse)) %>%
+                                            as.vector() %>%
+                                            unlist()) %>%
+        as.data.frame() %>%
+        mutate(!!finalCol := rowSums(.[], na.rm = T)) 
+      anrTimes[22005:22010, ]
+      anrTimes[91:95, ]
+      
+      length(c(names(regionGrid)[3:(ncol(regionGrid))]))
+      length(names(anrTimes)[1:(ncol(anrTimes)-1)])
+      names(anrTimes)[1:(ncol(anrTimes)-1)] <- c(names(regionGrid)[3:(ncol(regionGrid))])
+      head(anrTimes)
+      
+      # run some checks
+      stopifnot(anr[20, 20] * regionalMix0[20, colofInterest] == anrTimes[20, 20])
+      stopifnot(anr[100, 100] * regionalMix0[100, colofInterest] == anrTimes[100, 100])
+      stopifnot(anr[200, 200] * regionalMix0[200, colofInterest] == anrTimes[200, 200])
+      
+      anrTimes <- anrTimes %>%
+        # include id col back in
+        bind_cols(regionGrid %>% dplyr::select(rcFid_1km), .)
+      head(anrTimes)
+      return(anrTimes)
+      
+    })
+    
+    # combine back together
+    anrTimesbind <- bind_rows(regSplit)
+    
+    return(anrTimesbind)
+  } # end of multiplying transposing function
+  
+  # get current relevant paths
+  currPath <- file.path("data_in", "animals")
+  resultsPath <- file.path("results")
+  
+  ##### 12a - load grids - animals and land cover - with regions #####
+  gridAnimals <- st_read(file.path(currPath, "all_animals_1km.gpkg")) %>%
+    st_drop_geometry() %>%
+    merge(ghgGridGB, .)
+  head(gridAnimals)
+  
+  # convert non-england regions to 'other'
+  gridAnimals$region <- ifelse(gridAnimals$region %in% 
+                                 c("Highlands and Islands", "Mid and West Wales"
+                                   , "West Scotland", "South Scotland", "North Wales"
+                                   , "Mid Scotland and Fife", "South Wales West"
+                                   , "Glasgow", "Central Scotland", "South Wales Central", "Lothian"
+                                   , "North East Scotland", "South Wales East")
+                               , "other", gridAnimals$region)
+  
+  # add underscores to regions, to make them match output df
+  gridAnimals$region <- gsub(" ", "_", gridAnimals$region)
+  # and make London the same as South East
+  gridAnimals$region <- ifelse(gridAnimals$region == "London", "South_East"
+                               , gridAnimals$region)
+  # convert the humber, to match excrete N df
+  gridAnimals$region <- ifelse(gridAnimals$region == "Yorkshire_and_The_Humber"
+                               , "Yorkshire_and_the_Humber"
+                               , gridAnimals$region)
+  unique(gridAnimals$region)
+  head(gridAnimals)
+  
+  gridLand <- st_read(file.path("data_in", "land_cover", "land_cover_area.gpkg")) %>%
+    st_drop_geometry() %>%
+    merge(ghgGridGB, .) %>%
+    merge(gridAnimals %>% dplyr::select(region, rcFid_1km) %>% st_drop_geometry(), .)
+  head(gridLand)
+  
+  #### 12b - enteric fermentation ####
+  # load in enteric fermentation - a per-animal emission value
+  entFerm <- fread(file.path(resultsPath, "animals", "entericFermCH4CO2e.csv"))
+  head(entFerm)
+  
+  # run through the transposing multiplication function
+  totalEntFerm <- regionsTranspose(griddf = gridAnimals
+                                   , rSel = entFerm
+                                   , finalCol = "kgCO2e_entferm"
+                                   , colofInterest = "kgCO2.50pcScen")
+  head(totalEntFerm)
+  class(totalEntFerm)
+  
+  ###### add to final dataframe ######
+  ghgGridResults <- totalEntFerm %>% dplyr::select(rcFid_1km, kgCO2e_entferm) %>%
+    merge(ghgGridGB, .
+          , by = "rcFid_1km")
+  head(ghgGridResults)
+  plot(ghgGridResults[1])
+  
+  #### 12c - manure management ####
+  # load in manure management - a per-animal emission value - it is a value for 6 months (indoors)
+  manMgmt <- fread(file.path(resultsPath, "animals", "sixMonthMMCO2e.csv"))
+  head(manMgmt)
+  
+  # run through the transposing multiplication function
+  totalmanMgmt <- regionsTranspose(griddf = gridAnimals
+                                   , rSel = manMgmt
+                                   , finalCol = "kgCO2e_manMgmt"
+                                   , colofInterest = "MMkgCO2e6MnIn")
+  head(totalmanMgmt)
+  
+  ###### add to final dataframe ######
+  ghgGridResults <- totalmanMgmt %>% dplyr::select(rcFid_1km, kgCO2e_manMgmt) %>%
+    merge(ghgGridResults, .
+          , by = "rcFid_1km")
+  head(ghgGridResults)
+  
+  #### 12d - animal excretions ####
+  # load in animal excretions - a per-animal emission value
+  excrete <- fread(file.path(resultsPath, "animals", "annual_grazing_emissions.csv"))
+  head(excrete)
+  
+  # run through the transposing multiplication function
+  totalexcrete <- regionsTranspose(griddf = gridAnimals
+                                   , rSel = excrete
+                                   , finalCol = "kgCO2e_excrete"
+                                   , colofInterest = "grazEmisYr_kgCO2e")
+  head(totalexcrete)
+  
+  ###### add to final dataframe ######
+  ghgGridResults <- totalexcrete %>% dplyr::select(rcFid_1km, kgCO2e_excrete) %>%
+    merge(ghgGridResults, .
+          , by = "rcFid_1km")
+  head(ghgGridResults)
+  
+  #### 12e - fertiliser use ####
+  # load in fertiliser - an amount per km2
+  fertUse <- st_read(file.path(resultsPath, "arable", "fertiliser_emissions.gpkg"))
+  head(fertUse)
+  
+  ###### add to final dataframe ######
+  ghgGridResults <- fertUse %>% dplyr::select(fertliser_CO2e_kgkm2, rcFid_1km) %>%
+    st_drop_geometry() %>%
+    merge(ghgGridResults, .
+          , by = "rcFid_1km"
+          , all = T) %>%
+    replace(is.na(.), 0)
+  head(ghgGridResults)
+  
+  #### 12f - land use ####
+  # load in land use emissions - an amount per km2 for non-ag areas
+  landUse <- st_read(file.path(resultsPath, "land_use", "land_use_emissions.gpkg")) %>%
+    # get a kg co2e value
+    mutate(landCoverTotalEmis_kgco2 = landCoverTotalEmis_tco2 * 1000)
+  head(landUse)
+  
+  ###### add to final dataframe ######
+  ghgGridResults <- landUse %>% dplyr::select(landCoverTotalEmis_kgco2, rcFid_1km) %>%
+    st_drop_geometry() %>%
+    merge(ghgGridResults, .
+          , by = "rcFid_1km"
+          , all = T) %>%
+    replace(is.na(.), 0)
+  head(ghgGridResults)
+  
+  #### 12g - residue management ####
+  # load in residue management emissions - an amount per km2 
+  residues <- st_read(file.path(resultsPath, "arable", "residEmisComb_kgCO2e.gpkg")) %>%
+    # assume all burned
+    mutate(totalResid_kgKm2 = Burned..100..)
+  head(residues)
+  
+  ###### add to final dataframe ######
+  ghgGridResults <- residues %>% dplyr::select(totalResid_kgKm2, rcFid_1km) %>%
+    st_drop_geometry() %>%
+    merge(ghgGridResults, .
+          , by = "rcFid_1km"
+          , all = T) %>%
+    replace(is.na(.), 0)
+  head(ghgGridResults)
+  
+  #### 12h - on-farm energy ####
+  # load in on-farm energy emissions - an amount per km2 
+  onFarmEnergy <- st_read(file.path(resultsPath, "land_use", "fuel_emissions.gpkg")) %>%
+    rename(fuel_kgco2e = totalkgCO2e)
+  head(onFarmEnergy)
+  
+  ###### add to final dataframe ######
+  ghgGridResults <- onFarmEnergy %>% dplyr::select(fuel_kgco2e, rcFid_1km) %>%
+    st_drop_geometry() %>%
+    merge(ghgGridResults, .
+          , by = "rcFid_1km"
+          , all = T) %>%
+    replace(is.na(.), 0)
+  head(ghgGridResults)
+  str(ghgGridResults)
+
+  #### 12i - sum all together ####
+  ghgGridResultsSum <- ghgGridResults %>% st_drop_geometry() %>%
+    mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_entferm:fuel_kgco2e)))) %>%
+    # convert to tonnes
+    mutate(total_Tco2e = total_kgco2e / 1000) 
+  head(ghgGridResultsSum)
+  str(ghgGridResultsSum)
+  max(ghgGridResultsSum$total_Tco2e, na.rm = T)
+  
+  attr(ghgGridResultsSum$total_kgco2e, "ATT") <- NULL
+  attr(ghgGridResultsSum$total_Tco2e, "ATT") <- NULL
+  str(ghgGridResultsSum)
+  
+  #### 12j - inverse ####
+  ghgGridResultsSum <- ghgGridResultsSum %>%
+    mutate(total_Tco2e_inv = total_Tco2e * -1)
+  head(ghgGridResultsSum)
+  str(ghgGridResultsSum)
+  
+  # make spatial... again
+  ghgGridResultsSpat <- ghgGridResultsSum %>%
+    merge(ghgGridGB, .)
+  head(ghgGridResultsSpat)
+  str(ghgGridResultsSpat)
+  
+  #### 12k - save final output ####
+  st_write(ghgGridResultsSpat, file.path(resultsPath, "ghg_final_emissions_CO2e.gpkg"), append = F)
+  fwrite(st_drop_geometry(ghgGridResultsSpat)
+         , file.path(resultsPath, "ghg_final_emissions_CO2e.csv")
+         , row.names = F)
+  
+  which(ghgGridResultsSpat$total_Tco2e == max(ghgGridResultsSpat$total_Tco2e, na.rm = T))
+  ghgGridResultsSpat[197730, ]
+  
+  # make spatial (raster data)
+  vpRast <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e_inv, geometry))
+  plot(vpRast)
+  empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
+  vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
+  crs(vpRast) <- "epsg:27700"
+  # save raster
+  writeRaster(vpRast, file.path(resultsPath, "ghgfin_emissions_CO2e_inv.tif"), overwrite = T)
+  
+  rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
+                           , dx = 1000, dy = 1000
+                           , crs = 27700)
+  plot(rasterDf)
+  write_stars(rasterDf,  file.path(resultsPath, "ghg_final_emissions_CO2e.tif"))
+  
+  #### 12l - plot final output ####
+  # set colour ramp
+  rasterDf2 <- rasterDf %>%
+    as.data.frame(xy = T)
+  head(rasterDf2)
+  
+  breaks <- c(-1000, 0, 1000, 2000)  # Define your custom breaks
+  colors <- c("#40B0A6", "white", "orange1", "#E66100")
+  
+  gg <- ggplot() +
+    geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
+    theme_void() +
+    coord_equal() +
+    scale_fill_gradientn(breaks = breaks, colours = colors
+                         , na.value="white") +
+    labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
+    theme(legend.text = element_text(size = 8))
+  
+  png("images/ghg_balance.png"
+      , res = 200
+      , width = 1000, height = 1200)
+  print(gg)
+  dev.off()
+  
+  png("images/ghg_balance2.png"
+      , res = 200
+      , width = 900, height = 1200)
+  print(gg)
+  dev.off()
+}
+
+
