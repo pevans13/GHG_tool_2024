@@ -45,9 +45,9 @@ rm(local)
 ## here you can select parts which you would like to run
 ## To do this, change the right side of the relevant arrow to a 'T'
 ## ------------ ----- --------------  ##
-part1 <- T # create architecture
-part2 <- T # create grid that will be used for the whole project
-part3 <- T # imports data from the original place they were stored
+part1 <- F # create architecture
+part2 <- F # create grid that will be used for the whole project
+part3 <- F # imports data from the original place they were stored
 part4 <- T # create an initial script that contains all the R packages required for the project
 
 #### 0 - load libraries ####
@@ -66,6 +66,8 @@ if(part1){
   dir.create("data_in/", showWarnings = F, recursive = T)
   # outputs
   dir.create("results/", showWarnings = F, recursive = T)
+  # scenarios
+  dir.create("scenario/", showWarnings = F, recursive = T)
   ## specific categories
   catList <- c("land_use", "margins", "hedgerow", "perennial", "arable", "animals")
   for (i in 1:length(catList)){
@@ -80,6 +82,13 @@ if(part1){
   for (i in 1:length(catList)){
     # datasets
     dir.create(paste0("data_in/", catList[i],"/"), showWarnings = F, recursive = T)
+  }
+  
+  # scenarios
+  catList <- c("scen_maps", "results")
+  for (i in 1:length(catList)){
+    # datasets
+    dir.create(paste0("scenario/", catList[i],"/"), showWarnings = F, recursive = T)
   }
   
   # tidy
