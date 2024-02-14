@@ -6,6 +6,7 @@
 ##                    emissions calculation into one script##                    
 ##                    
 ## Run after: ghgtool_setup.R
+##            nonBovines.R
 ##
 ## ------------ Notes --------------  ##
 ## The script encompasses many different process / emissions 
@@ -80,8 +81,6 @@ rm(local)
 ## ------------ ----- --------------  ##
 source("./r_scripts/proj_packages.R")
 
-#### 0 - paths ####
-
 #### 0 - run which parts? ####
 # select which bits need running
 ## ------------ Notes --------------  ##
@@ -130,7 +129,7 @@ part9residue <- F
 # this includes on-farm fuel use, and potato storage
 part10onfarmenergy <- F
 
-part11combineemissions <- F
+part11combineemissions <- T
 
 #### 0 - select animal scenario ####
 ## ------------ Notes --------------  ##
@@ -684,9 +683,10 @@ if(part2AnimalGrid){
   ###### 2b3 - determine non-bovine animals per 5 km ######
   
   ## ------------ Notes --------------  ##
-  ## We could only get bovine data from Defra. Data on other animals came from
-  ## AgCensus, of which data is available at 5 km2 resolution. These data include
-  ## numbers of sheep, pigs, poultry, and horses.
+  ## We could only get bovine data from Defra, which covered England, Scotland,
+  ## and Wales. Data on other animals (for England only) came from
+  ## AgCensus, of which data is available at 5 km2 resolution. These data included
+  ## numbers of sheep, pigs, and poultry.
   ## Assuming these animals are always on grasslands, a similar method will be
   ## used for these animals as it was for the bovines: they were calculated per
   ## grassland proportion. As the AgCensus data were from 2010, the numbers 
@@ -696,11 +696,24 @@ if(part2AnimalGrid){
   ## meant that each animal had more space / less space per individual depending on whether
   ## that animal type increased or decreased.
   
-  ## Pigs decreased by 26% between 2010 and 2020, while sheep decreased 21%
+  ## In England, pigs decreased by 26% between 2010 and 2020, while sheep decreased 21%
   ## and poultry increased by 7%
-  ## ------------ ----- --------------  ##
   
-  # create if it does not already exist
+  ## Non-bovine data for Scotland and Wales were not 
+  ## available from the AgCensus dataset. These data were therefore derived 
+  ## from government datasets that were released in the form of spatial images. 
+  ## The non-bovine animal groups obtained in this way were sheep, pigs, and 
+  ## poultry. Each spatial image contained group data on the number of maximum 
+  ## capacities of the registered holdings of that type per km2. The maps were 
+  ## produced using a smoothing kernel density function based on the holdings. 
+  ## Each of the maps were created as raster after the were georeferenced 
+  ## based on the nation outlines. The '2b5b' section below deals with extracting
+  ## the numbers of these animals to Scotland and Wales. This is based on the 
+  ## maps and government data collected in 2020. 
+  ## ------------ ----- --------------  ##
+  stop("to adjust non-bovines")
+  
+  # create if it does not already exist - the non-bovine grid for England
   if(file.exists(file.path(currPath, "nonBovine_grid_2015_1km.gpkg"))){
     nonBov1kmGB <- st_read(file.path(currPath, "nonBovine_grid_2015_1km.gpkg"))
   } else {
@@ -779,7 +792,6 @@ if(part2AnimalGrid){
                                   # multiply, to get the quantity of each bovine category in each 1 km2
                                   nonBovGrass <- grassRow$grassPC5km * rowAgain
                                   nonBovGrass <- bind_cols(grassRow %>% st_drop_geometry() %>% dplyr::select(rcFid_1km), nonBovGrass)
-                                  
                                 }
                               }
       stopCluster(cl)
@@ -879,6 +891,10 @@ if(part2AnimalGrid){
     head(cellRegions)
     plot(cellRegions[2])
     
+    # save
+    fwrite(cellRegions %>% st_drop_geometry()
+           , file.path("data_in", "regions_assigned.csv"), row.names = F)
+    
     ###### 2b5 - proportional relationship of non-bovine animals between 2010 and 2020 ######
     ## ------------ Notes --------------  ##
     ## in this section, proportional relationships between non-bovine animals recorded in
@@ -936,11 +952,56 @@ if(part2AnimalGrid){
     ## from UK Government data. The original categories were ranges of:
     ## <=1, 1-5, 5 - 20, 20-80, 80-200, 200-430 for pigs
     ## <=1, 1-30, 30-60, 60-120, 120-240, 240-460 for sheep
-    ## the top number of each bracket was used 
+    ## the lowest number of each bracket was used 
     ## These data were geoprocessed from the original, polygonised.
     ## Below, these polygons will rasterised 
     ## ------------ ----- --------------  ##
-    stop("grass roots")
+    
+    # stop("grass roots")
+    # rm(list=setdiff(ls(), c("currPath")))
+    # create if it does not already exist - the non-bovine grid for Scotland and Wales
+    if(file.exists(file.path(currPath, "nonBovine_SW_2015_1km.gpkg"))){
+      nbScotWal <- st_read(file.path(currPath, "nonBovine_SW_2015_1km.gpk"))
+    } else {
+      
+      # list all the three datasets containing sheep, pigs, and poultry in 
+      # Scotland and Wales
+      sw.list <- list.files(file.path(currPath)
+                            , pattern = "_numbers.gpkg"
+                            , full.names = T)
+      stopifnot(length(sw.list) == 3)
+      
+      # load in scotland and wales shapefiles
+      scot <- st_read("C:/Users/paueva/OneDrive - UKCEH/Data/uk/boundary/scotland1.gpkg") %>%
+        dplyr::select(1)
+      wales <- st_read("C:/Users/paueva/OneDrive - UKCEH/Data/uk/boundary/wales1.gpkg") %>%
+        dplyr::select(1)
+      plot(wales[1])
+      
+      for(sw in sw.list){
+        
+        # load that shapefile - contains the number of animals per every km in 
+        # each polygon
+        sw.poly <- st_read(sw) %>%
+          st_transform(27700)
+        head(sw.poly)
+        plot(sw.poly[1])
+        
+        ## use the current animal shapefile to act as a clip for the other regions
+        sw.difference1 <- sw.poly %>%
+          st_difference(., tscoland)
+        head(sw.difference1)
+        plot(sw.difference1[1])
+        
+        ## create a union with Scotland and Wales, filling in blank spaces
+        sw.union1 <- sw.poly %>%
+          st_union(wales)
+        head(sw.union1)
+        plot(sw.union1[1])
+        
+      } # end of 'sw'
+      
+    }
     
     # read in polygons
     pigNumb.poly <- st_read(file.path(currPath, "pig_numbers.gpkg"))
@@ -959,9 +1020,58 @@ if(part2AnimalGrid){
     
     sheepNumb.poly <- st_read(file.path(currPath, "sheep_numbers.gpkg"))
     sheepNumb.poly
+    unique(sheepNumb.poly$sheep_numb)
+    # convert top values to middle and lowest values
+    sheepNumb.poly <- sheepNumb.poly %>%
+      mutate(sheep_numb_high = sheep_numb
+             , sheep_numb_mid = ifelse(sheep_numb == 460, 350
+                                       , ifelse(sheep_numb == 240, 180
+                                                , ifelse(sheep_numb == 120, 90
+                                                         , ifelse(sheep_numb == 60, 45
+                                                                  , ifelse(sheep_numb == 30, 15
+                                                                           , ifelse(sheep_numb == 1, 1, 0
+                                                                           ))))))
+             , sheep_numb_low = ifelse(sheep_numb == 460, 240
+                                       , ifelse(sheep_numb == 240, 120
+                                                , ifelse(sheep_numb == 120, 60
+                                                         , ifelse(sheep_numb == 60, 30
+                                                                  , ifelse(sheep_numb == 30, 1
+                                                                           
+                                                                           , ifelse(sheep_numb == 1, 0, 0
+                                                                           )))))))
     st_bbox(sheepNumb.poly); st_crs(sheepNumb.poly)
     # convert to 27700
-    sheepNumb.poly27700 <- st_transform(sheepNumb.poly, 27700)
+    sheepNumb.poly27700 <- st_transform(sheepNumb.poly, 27700) %>%
+      # get area
+      st_make_valid() %>%
+      mutate(area = st_area(.)) %>%
+      mutate(km_area = as.vector(area/1000000))
+    
+    ## save all the low, mid and high ranges to determine which is most accurate according to 
+    ## other government statistics
+    for(nm in c("sheep_numb_high", "sheep_numb_mid", "sheep_numb_low")){
+      
+      sheepCat <- sheepNumb.poly27700 %>% 
+        dplyr::select(all_of(nm), km_area) %>%
+        rename(sheep_per_km = {{ nm }}) %>%
+        mutate(total_sheep_km = sheep_per_km * km_area)
+      # get total number of sheep
+      sum(sheepCat$total_sheep_km)
+      
+      
+      sheepNumb.rast <- st_rasterize(sheepNumb.poly27700 %>% 
+                                       dplyr::select(all_of(nm)) %>%
+                                       rename(sheep_per_km = sheep_numb) %>%
+                                       # , dy = 1000, dx = 1000) %>%
+                                       rast()
+      )
+      sheepNumb.rast
+      plot(sheepNumb.rast)
+      
+    }
+    
+    
+    
     sheepNumb.rast <- st_rasterize(sheepNumb.poly27700 %>% 
                                      rename(sheep_per_km = sheep_numb) %>%
                                      dplyr::select(sheep_per_km)
@@ -1079,15 +1189,47 @@ if(part2AnimalGrid){
     ## there were 6.68 million poultry for meat production in 2020, and 6.6 million for egg production,
     ## which equals 13.28 together.
     
-    ## for Wales, there were 2,438,761,  1,787,890, and 5,326,057 poultry for 
-    ## North Wales, South Wales, Mid and West Wales, respectively. 
+    ## for Wales, there were 2,438,761, 1,787,890, and 5,326,057 poultry for 
+    ## North Wales, South Wales, Mid and West Wales, respectively (9,552,708 combined). 
+    ## Scotland and Wales together make 22.55 million poultry
     
-    ## like sheep and pigs, poultry was calculated using georeferenced maps
+    ## like sheep and pigs, poultry was calculated using georeferenced maps, with 
+    ## the overall amounts limited to the values above. In the df below, highest value of
+    ## a range were used. The ranges were:
+    ## 0-50, 51-250, 251 - 600, 601-1300, 1301-2500, 2501-39474 for poultry
+    ## http://apha.defra.gov.uk/documents/surveillance/diseases/lddg-pop-report-avian2020.pdf
     ## ------------ ----- --------------  ##
     
     poultryNumb.poly <- st_read(file.path(currPath, "poultry_numbers.gpkg")) %>%
       dplyr::select(poul_numb) %>%
-      mutate(poultry_per_km = as.numeric(poul_numb))
+      mutate(poultry_per_km = as.numeric(poul_numb)) %>%
+      st_make_valid() %>%
+      mutate(area = st_area(.)) %>%
+      mutate(km_area = as.vector(area/1000000)) %>%
+      mutate(total_poultry = poultry_per_km * km_area)
+    ## convert poultry high to medium and low
+    poultryNumb.poly <- poultryNumb.poly %>%
+      mutate(poul_numb_high = poultry_per_km
+             , poul_numb_mid = ifelse(poul_numb == 39000, 20988
+                                      , ifelse(poul_numb == 2500, 1900
+                                               , ifelse(poul_numb == 1300, 950
+                                                        , ifelse(poul_numb == 600, 425
+                                                                 , ifelse(poul_numb == 250, 150
+                                                                          , ifelse(poul_numb == 50, 25, 0
+                                                                          ))))))
+             , poul_numb_low = ifelse(poul_numb == 39000, 2501
+                                      , ifelse(poul_numb == 2500, 1301
+                                               , ifelse(poul_numb == 1300, 601
+                                                        , ifelse(poul_numb == 600, 251
+                                                                 , ifelse(poul_numb == 250, 51
+                                                                          
+                                                                          , ifelse(poul_numb == 50, 1, 0
+                                                                          )))))))
+    
+    # get totals 
+    sum(poultryNumb.poly$total_poultry) / 1000000
+    head(poultryNumb.poly)
+    plot(poultryNumb.poly[1])
     poultryNumb.poly
     st_bbox(poultryNumb.poly); st_crs(poultryNumb.poly)
     # convert to 27700
@@ -1128,6 +1270,7 @@ if(part2AnimalGrid){
   } # end of non-bovine grid
   
   ##### 2b6 - add non-bovine animals back in #####
+  nonBov1km.part3 <- st_read("nonBov1km3.gpkg")
   animalsFinal <- cows1kmGB %>% 
     merge(., nonBov1km.part3 %>% dplyr::select(rcFid_1km, region, breed_pigs_gilts_boars:poultry_per_km) %>%
             st_drop_geometry()
@@ -2444,7 +2587,7 @@ if(part4Enteric){
   # for dairy cows, 125.44 kg CH4/head/year (GHGi, 2019) needs to be covered, which it is
   # for dairy heifers, 53.20 kg CH4/head/year (GHGi, 2019) needs to be covered, which it is
   
-  # as we are going to use the scenario of 50% time housed with 80% DE and 50% grazing with 85% DE
+  # as we are going to use the scenario of 50% time housed with 75% DE and 50% grazing with 80% DE
   # see whether the half and half is ok
   dairyCH4v2 <- dairyCH4 %>%
     dplyr::select(animal, category, kgCH4GE.MJdayGEsml_75, kgCH4GE.MJdayGEhoused_80) %>%
@@ -3902,7 +4045,7 @@ if(part7fertiliserUse){
     uniqueRb209Crops <- c("beans", "maize", "winterwheat", "winterbarley", "springwheat", "springbarley"
                           , "forage" # forage crops are oats 
                           , "osr", "potatoes", "sugarbeet"
-                          , "uncropped") # uncropped is lc_401 'imporved grassland' 
+                          , "uncropped") # uncropped is lc_401 'improved grassland' 
     snsCropParameters <- cbind(threeParas = rep(unique(cropSoilRain$snsCats), length(uniqueRb209Crops))
                                , crop_type = uniqueRb209Crops
                                , sns0 = 0
@@ -6111,7 +6254,7 @@ Data:
 if(part11combineemissions){
   
   # stop("part11")
-
+  
   # griddf = gridAnimals
   # rSel = entFerm
   # finalCol = "kgCO2e_entferm"
@@ -6140,7 +6283,7 @@ if(part11combineemissions){
         filter(region == currRegion)
       head(regionGrid)
       
-      # use the same information for the N excrete grid, but add 'All' as well
+      # use the same information for the other grid, but add 'All' as well
       regionSelect <- rSel %>% 
         filter(UK.Region %in% c(currRegion, "All"))
       head(regionSelect)
@@ -6154,8 +6297,8 @@ if(part11combineemissions){
       if(identical(
         c(names(regionGrid)[3:(ncol(regionGrid))])
         , c(regionSelect$animal)
-        )
-        ){
+      )
+      ){
         regionalMix <- regionSelect
         cat("all names match\n")
         
@@ -6172,7 +6315,7 @@ if(part11combineemissions){
         stopifnot(identical(
           c(names(regionGrid)[3:(ncol(regionGrid))])
           , c(regionalMix$animal)
-          ))
+        ))
         cat("names match after reshuffle\n")
       }
       head(regionalMix)
@@ -6399,7 +6542,7 @@ if(part11combineemissions){
     replace(is.na(.), 0)
   head(ghgGridResults)
   str(ghgGridResults)
-
+  
   #### 12i - sum all together ####
   ghgGridResultsSum <- ghgGridResults %>% st_drop_geometry() %>%
     mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_entferm:fuel_kgco2e)))) %>%
