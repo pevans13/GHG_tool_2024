@@ -26,10 +26,11 @@
 ## ------------ ----- --------------  ##
 ##
 ## Specific numbered tasks:
-## 1 - 
-## 2 - 
-## 3 - 
-## 4 - 
+## 1 - create a 1 km2 GB-wide grid that will be used to record the results of all emissions / sequestrations
+## 2 - determine the number of 'livestock' animals per km - this is composed of bovine and non-bovive (sheep, pigs, poultry) animals
+## 3 - create an attribute table that contains all information (i.e. life history properties) about all animal types
+##        This includes their roles, and the regions of GB they are found in.
+## 4 - Calculate the emissions due to enteric fermentation - the process by which animals create methane
 ##
 ## list of final outputs:
 ##    data_in/ghgGridGB.gpkg -> 1 km2 grid of inland GB that contains 'rcFid_1km', which is a unique cell identifier
@@ -87,6 +88,11 @@ source("./r_scripts/proj_packages.R")
 ## This is the section where the user chooses which section they want to run by
 ## putting a 'T' to the right of the specific arrows
 ## ------------ ----- --------------  ##
+# Do you want to run all of the script?
+# if you do, you just need to convert the below line 'runAll' to 'TRUE' (or 'T') - you do not need to adjust any of the other sections
+runAll <- F
+
+# part 0 - create the grid
 createGrid <- F
 
 # part 1 creates a grid that contains the composition of 1 km2 in terms of land 
@@ -94,8 +100,8 @@ createGrid <- F
 part1LandCoverGrid <- F
 
 # part 2 creates a grid that contains the number of animals present in a 1 km2
-# cell. It uses Defra CTS data and AgCensus data to derive the animal numbers
-part2AnimalGrid <- T
+# cell. It uses Defra CTS data and AgCensus data, and Scotland and Wales maps to derive the animal numbers
+part2AnimalGrid <- F
 
 # part 3 creates attribute tables for each type of animal
 part3AnimalAttributes <- F
@@ -116,7 +122,7 @@ part6excretions <- F
 ## 2. determine rainfall, crop type, and Soil Nitrogen Supply (SNS)
 ## 3. determine N use per km2 - derived from individual crops
 ## 4. calculate emissions based purely on assumed fertiliser
-part7fertiliserUse <- F
+part7fertiliserUse <- T
 
 # part 8 determines the emission and sequestration values based on non-agricultural land use
 part8landuse <- F
@@ -129,17 +135,28 @@ part9residue <- F
 # this includes on-farm fuel use, and potato storage
 part10onfarmenergy <- F
 
-part11combineemissions <- T
+part11combineemissions <- F
+
+if(runAll){
+  createGrid <- part1LandCoverGrid <- part2AnimalGrid <- T
+  part3AnimalAttributes <- part4Enteric <- part5ManureManagement <- T
+  part6excretions <- part7fertiliserUse <- part8landuse <- T
+  part9residue <- part10onfarmenergy <- part11combineemissions <- T
+}
 
 #### 0 - select animal scenario ####
 ## ------------ Notes --------------  ##
 ## This sections allows you to choose what the set-up of animals will be. This
 ## relates to the quality of food, for both the inside portion (6 months) and
 ## the outside portion (6 months). The range should be between 60 and 85% 
-## digestible energy (DE)
+## digestible energy (DE). The defaults below, x and y, are recommended as that
+## produces enteric fermentation and volatile solids (in manure management)
+## similar to what literature suggests
 ## ------------ ----- --------------  ##
-DEinside <- 85
-DEoutside <- 65
+DEinside <- 83 # 'housed' value
+DEoutside <- 79 # outside value
+inDE <- paste0("housed_", DEinside)
+outDE <- paste0("sml_", DEoutside)
 
 #### 0 - load the GB grid ####
 ## ------------ Notes --------------  ##
@@ -174,7 +191,7 @@ if(createGrid){
     slice(c(unique(ghgGridPointsLCM$ID)
             # other points need including
             , 361464, 123034, 123037, 123038, 123041, 122419, 122420, 115536, 115532
-            , 454677, 454052, 455301, 298407, 298419, 296532, 295907, 294030, 294656
+            , 454677, 454052, 455301, 264407, 264419, 296532, 295907, 294030, 294656
             , 349009))
   ### set the crs, which should be 27700
   st_crs(ghgGridGB) <- 27700
@@ -472,6 +489,7 @@ if(part2AnimalGrid){
     lcmSeq <- round(c(seq(1, GBrows, GBrows/10), GBrows), 0)
     lcmSeq
     
+    notess
     tic("total extraction time")
     landCovers2b1 <- pblapply(1:(length(lcmSeq) - 1), function(x){
       # landCovers <- pblapply(1:2, function(x){
@@ -593,9 +611,13 @@ if(part2AnimalGrid){
       dplyr::select(rcFid_1km, grass_total_ha)
     head(grass19Cent)
     
+    ## ------------ Notes --------------  ##
+    ## on 6 cores the below took approximately
+    ## 7 minutes
+    ## ------------ ----- --------------  ##
     tic("total extraction time for grass")
     # Set up parallel processing (adjust the number of cores as needed)
-    registerDoParallel(cores = 4)
+    registerDoParallel(cores = 6)
     
     mt <- list() # save list
     # Use foreach with %dopar%
@@ -638,11 +660,13 @@ if(part2AnimalGrid){
     stopImplicitCluster()
     toc(log = T)
     head(cAndG)
+    apply(cAndG %>% st_drop_geometry(), 2, function(x) max(x, na.rm = TRUE))
     
     # merge with GB grid
-    cows1kmGB <- merge(ghgGridGB, cows1km, by = "rcFid_1km", all = T)
+    cows1kmGB <- merge(ghgGridGB, cAndG, by = "rcFid_1km", all = T)
     cows1kmGB[is.na(cows1kmGB)] <- 0
     head(cows1kmGB[, 1:20])
+    plot(cows1kmGB[which(names(cows1kmGB) == "Continental_0 - 3 months_Females for slaughter")])
     class(cows1kmGB)
     #### save
     st_write(cows1kmGB, file.path(currPath, "cow_grid_2020_1km.gpkg"), append = F)
@@ -711,7 +735,6 @@ if(part2AnimalGrid){
   ## the numbers of these animals to Scotland and Wales. This is based on the 
   ## maps and government data collected in 2020. 
   ## ------------ ----- --------------  ##
-  stop("to adjust non-bovines")
   
   # create if it does not already exist - the non-bovine grid for England
   if(file.exists(file.path(currPath, "nonBovine_grid_2015_1km.gpkg"))){
@@ -727,8 +750,8 @@ if(part2AnimalGrid){
     st_geometry(AgCensus5kmOG) <- AgGeom
     st_crs(AgCensus5kmOG) <- 27700
     st_write(AgCensus5kmOG, "data_in/animals/AgCensus5kmOGm.gpkg", append = F)
-    
     head(AgCensus5kmOG)
+    
     ## only keep info of interest i.e. pig, horses, sheep, poultry, spatial refs
     agNames <- fread(file.path(currPath, "England_2010_5k.csv"))
     # get the full names
@@ -764,10 +787,10 @@ if(part2AnimalGrid){
     } else {
       ## Parallel code
       ## ------------ Notes --------------  ##
-      ## should take 1h 20 mins
+      ## should take between 1h 20 mins - 1h 40 mins
       ## ------------ ----- --------------  ##
       tic("total time for non-bovine grid")
-      registerDoParallel(cl <- makeCluster(5))
+      registerDoParallel(cl <- makeCluster(6))
       results_list <- foreach(i = 1:nrow(AgCensus5km)
                               , .combine = "rbind"           # Combine results
                               # Self-load
@@ -799,6 +822,7 @@ if(part2AnimalGrid){
       
       ### bind them
       nonBov1km <- bind_rows(results_list)
+      apply(nonBov1km %>% st_drop_geometry(), 2, function(x) max(x, na.rm = TRUE))
       # merge with GB grid
       nonBov1kmGB <- merge(ghgGridGB, nonBov1km, by = "rcFid_1km", all = T)
       nonBov1kmGB[is.na(nonBov1kmGB)] <- 0
@@ -889,7 +913,7 @@ if(part2AnimalGrid){
       toc()
     }
     head(cellRegions)
-    plot(cellRegions[2])
+    # plot(cellRegions[2])
     
     # save
     fwrite(cellRegions %>% st_drop_geometry()
@@ -936,252 +960,120 @@ if(part2AnimalGrid){
              , across(contains("poultry"), ~.*1.07))
     head(nonBov1kmGB.prop2)
     
-    st_write(nonBov1kmGB.prop2, "nonBov1kmGBprop2.gpkg")
+    st_write(nonBov1kmGB.prop2, file.path(currPath, "nonBovine_grid_2020_1km.gpkg"), append = F)
     
-    ###### 2b5b - proportional relationship of non-bovine animals - Scotland and Wales
-    ## ------------ Notes --------------  ##
-    ## livestock data for Wales can be obtained in two ways: total livestock
-    ## numbers in 2017, by region (https://statswales.gov.wales/Catalogue/Agriculture/Agricultural-Survey/Area-Survey-Results/total-livestock-in-wales-by-area)
-    ## and 2020 livestock numbers, by animal type and 'role' (https://www.gov.wales/survey-agriculture-and-horticulture-june-2022)
-    ## From the 2017 data, the proportion of animals in different regions of Wales could have been calculated in terms
-    ## of percentage. However, to make the methodology consistent, they were calculated the same way as Scotland. See next 'Notes' section
-    ## ------------ ----- --------------  ##
+    # write readme
+    sink(file = NULL)
+    sink(file = file.path(currPath, "readme_nonBovine_grid_2015_1km.md"))
+    cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+  Date created: 2023-08-10
+  Last update:",  format(Sys.Date()), "
+  
+  Description of 'nonBovine_grid_2020_1km.gpkg':
+  This is a gridded dataset that contains the quantity of different farmed non-bovine animals, based on the underlying grass area. 
+  The animals are split up into different species and life stages e.g. breeding ewes intended for further breeding
+  These data were obtained from 2015 AgCensus, which was at the 5 km2 resolution and featured data collected in 2010
+  Using the amount of grass in each 1 km2 underlying the each 5 km2, the non-bovine numbers in a 5 km2 cell where proportied to each 1 km2 based on proportion of grass
+  These numbers were then further adjusted based on changes in animals numbers between 2010 and 2020: Pigs decreased by 26% between 2010 and 2020, while sheep decreased 21% and poultry increased by 7%
+  
+  Citation for the original data: 
+  
+  
+  Columns of 'nonBovine_grid_2015_1km.gpkg':
+    'rcFid_1km' = centroid point of 1 km reference id (EPSG: 27700) [x and y coordinates are seperated by '_']
+    '[animal_type]' = derived (using proportion of grass in 5 km2) numbers of animals of that type present within a 1 km2 cell for 2010
     
-    ## ------------ Notes --------------  ##
-    ## livestock data for Scotland were obtained by using 1 km2 published maps (in image form)
-    ## from UK Government data. The original categories were ranges of:
-    ## <=1, 1-5, 5 - 20, 20-80, 80-200, 200-430 for pigs
-    ## <=1, 1-30, 30-60, 60-120, 120-240, 240-460 for sheep
-    ## the lowest number of each bracket was used 
-    ## These data were geoprocessed from the original, polygonised.
-    ## Below, these polygons will rasterised 
-    ## ------------ ----- --------------  ##
+  Data: non-bovine numbers
+  units: quantity
+  Spatial resolution: 1 km2
+  Spatial extent: GB
+  Temporal coverage: 2015
+  Native projection: 27700")
+    sink(file = NULL)
+  }
+  
+  ###### 2b5b - proportional relationship of non-bovine animals - Scotland and Wales
+  ## ------------ Notes --------------  ##
+  ## livestock data for Wales can be obtained in two ways: total livestock
+  ## numbers in 2017, by region (https://statswales.gov.wales/Catalogue/Agriculture/Agricultural-Survey/Area-Survey-Results/total-livestock-in-wales-by-area)
+  ## and 2020 livestock numbers, by animal type and 'role' (https://www.gov.wales/survey-agriculture-and-horticulture-june-2022)
+  ## From the 2017 data, the proportion of animals in different regions of Wales could have been calculated in terms
+  ## of percentage. However, to make the methodology consistent, they were calculated the same way as Scotland. See next 'Notes' section
+  ## ------------ ----- --------------  ##
+  
+  ## ------------ Notes --------------  ##
+  ## livestock data for Scotland were obtained by using 1 km2 published maps (in image form)
+  ## from UK Government data. The original categories were ranges of:
+  ## <=1, 1-5, 5 - 20, 20-80, 80-200, 200-430 for pigs
+  ## <=1, 1-30, 30-60, 60-120, 120-240, 240-460 for sheep
+  ## the lowest number of each bracket was used 
+  ## These data were geoprocessed from the original, polygonised.
+  ## This was calculated in 'nonBovines.R'
+  ## Below, they were loaded back in
+  ## ------------ ----- --------------  ##
+  
+  # stop("grass roots")
+  # rm(list=setdiff(ls(), c("currPath")))
+  # create if it does not already exist - the non-bovine grid for Scotland and Wales
+  if(file.exists(file.path(currPath, "nonBovine_SW_2015_1km.gpkg"))){
+    nbScotWal <- st_read(file.path(currPath, "nonBovine_SW_2015_1km.gpk"))
+  } else {
     
-    # stop("grass roots")
-    # rm(list=setdiff(ls(), c("currPath")))
-    # create if it does not already exist - the non-bovine grid for Scotland and Wales
-    if(file.exists(file.path(currPath, "nonBovine_SW_2015_1km.gpkg"))){
-      nbScotWal <- st_read(file.path(currPath, "nonBovine_SW_2015_1km.gpk"))
-    } else {
-      
-      # list all the three datasets containing sheep, pigs, and poultry in 
-      # Scotland and Wales
-      sw.list <- list.files(file.path(currPath)
-                            , pattern = "_numbers.gpkg"
-                            , full.names = T)
-      stopifnot(length(sw.list) == 3)
-      
-      # load in scotland and wales shapefiles
-      scot <- st_read("C:/Users/paueva/OneDrive - UKCEH/Data/uk/boundary/scotland1.gpkg") %>%
-        dplyr::select(1)
-      wales <- st_read("C:/Users/paueva/OneDrive - UKCEH/Data/uk/boundary/wales1.gpkg") %>%
-        dplyr::select(1)
-      plot(wales[1])
-      
-      for(sw in sw.list){
-        
-        # load that shapefile - contains the number of animals per every km in 
-        # each polygon
-        sw.poly <- st_read(sw) %>%
-          st_transform(27700)
-        head(sw.poly)
-        plot(sw.poly[1])
-        
-        ## use the current animal shapefile to act as a clip for the other regions
-        sw.difference1 <- sw.poly %>%
-          st_difference(., tscoland)
-        head(sw.difference1)
-        plot(sw.difference1[1])
-        
-        ## create a union with Scotland and Wales, filling in blank spaces
-        sw.union1 <- sw.poly %>%
-          st_union(wales)
-        head(sw.union1)
-        plot(sw.union1[1])
-        
-      } # end of 'sw'
-      
-    }
+    # read in polygon
+    nonBov1kmSW <- st_read(file.path("results", "animals", "nonBov1kmSW.gpkg"))
+    nonBov1kmSW
     
-    # read in polygons
-    pigNumb.poly <- st_read(file.path(currPath, "pig_numbers.gpkg"))
-    pigNumb.poly
-    st_bbox(pigNumb.poly); st_crs(pigNumb.poly)
-    # convert to 27700
-    pigNumb.poly27700 <- st_transform(pigNumb.poly, 27700)
-    pigNumb.rast <- st_rasterize(pigNumb.poly27700 %>% dplyr::select(pigs_km)
-                                 , dy = 1000, dx = 1000) %>%
-      rast()
-    pigNumb.rast
-    plot(pigNumb.rast)
-    # save
-    writeRaster(pigNumb.rast, file.path(currPath, "pig_numbers.tif")
-                , overwrite=TRUE)
-    
-    sheepNumb.poly <- st_read(file.path(currPath, "sheep_numbers.gpkg"))
-    sheepNumb.poly
-    unique(sheepNumb.poly$sheep_numb)
-    # convert top values to middle and lowest values
-    sheepNumb.poly <- sheepNumb.poly %>%
-      mutate(sheep_numb_high = sheep_numb
-             , sheep_numb_mid = ifelse(sheep_numb == 460, 350
-                                       , ifelse(sheep_numb == 240, 180
-                                                , ifelse(sheep_numb == 120, 90
-                                                         , ifelse(sheep_numb == 60, 45
-                                                                  , ifelse(sheep_numb == 30, 15
-                                                                           , ifelse(sheep_numb == 1, 1, 0
-                                                                           ))))))
-             , sheep_numb_low = ifelse(sheep_numb == 460, 240
-                                       , ifelse(sheep_numb == 240, 120
-                                                , ifelse(sheep_numb == 120, 60
-                                                         , ifelse(sheep_numb == 60, 30
-                                                                  , ifelse(sheep_numb == 30, 1
-                                                                           
-                                                                           , ifelse(sheep_numb == 1, 0, 0
-                                                                           )))))))
-    st_bbox(sheepNumb.poly); st_crs(sheepNumb.poly)
-    # convert to 27700
-    sheepNumb.poly27700 <- st_transform(sheepNumb.poly, 27700) %>%
-      # get area
-      st_make_valid() %>%
-      mutate(area = st_area(.)) %>%
-      mutate(km_area = as.vector(area/1000000))
-    
-    ## save all the low, mid and high ranges to determine which is most accurate according to 
-    ## other government statistics
-    for(nm in c("sheep_numb_high", "sheep_numb_mid", "sheep_numb_low")){
-      
-      sheepCat <- sheepNumb.poly27700 %>% 
-        dplyr::select(all_of(nm), km_area) %>%
-        rename(sheep_per_km = {{ nm }}) %>%
-        mutate(total_sheep_km = sheep_per_km * km_area)
-      # get total number of sheep
-      sum(sheepCat$total_sheep_km)
-      
-      
-      sheepNumb.rast <- st_rasterize(sheepNumb.poly27700 %>% 
-                                       dplyr::select(all_of(nm)) %>%
-                                       rename(sheep_per_km = sheep_numb) %>%
-                                       # , dy = 1000, dx = 1000) %>%
-                                       rast()
-      )
-      sheepNumb.rast
-      plot(sheepNumb.rast)
-      
-    }
-    
-    
-    
-    sheepNumb.rast <- st_rasterize(sheepNumb.poly27700 %>% 
-                                     rename(sheep_per_km = sheep_numb) %>%
-                                     dplyr::select(sheep_per_km)
-                                   , dy = 1000, dx = 1000) %>%
-      rast()
-    sheepNumb.rast
-    plot(sheepNumb.rast)
-    # save
-    writeRaster(sheepNumb.rast, file.path(currPath, "sheep_numbers.tif")
-                , overwrite=TRUE)
-    
+    #### pig proportions
     # extract to polygon
     nonBov1kmGBprop2 <- st_read("nonBov1kmGBprop2.gpkg")
-    sheepNumb.point <- raster(sheepNumb.rast) %>% rasterToPoints() %>%
-      # Convert SpatialPointsDataFrame to sf object
-      as.data.frame() %>%
-      st_as_sf(coords = c("x", "y"))
-    st_crs(sheepNumb.point) <- st_crs(nonBov1kmGBprop2)
-    sheepNumb.point <- st_intersection(nonBov1kmGBprop2, sheepNumb.point)
-    plot(sheepNumb.point[1])
-    sheepNumb.point <- sheepNumb.point %>% st_drop_geometry() %>% 
-      dplyr::select(rcFid_1km, sheep_per_km) %>%
-      filter(!is.na(rcFid_1km))
-    nonBov1km <- dplyr::full_join(nonBov1kmGBprop2, sheepNumb.point
-                                  , relationship = "many-to-many") %>%
-      filter(!is.na(region))
-    head(nonBov1km)
-    # only keep distint IDs
-    nb <- distinct(nonBov1km %>% st_drop_geometry())
-    nonBov1km <- nonBov1kmGB.prop2 %>%
-      dplyr::select(rcFid_1km, region) %>%
-      merge(. 
-            , nb)
-    
-    pigNumb.point <- raster(pigNumb.rast) %>% rasterToPoints() %>%
-      # Convert SpatialPointsDataFrame to sf object
-      as.data.frame() %>%
-      st_as_sf(coords = c("x", "y"))
-    st_crs(pigNumb.point) <- st_crs(nonBov1kmGBprop2)
-    pigNumb.point <- st_intersection(nonBov1kmGBprop2, pigNumb.point)
-    plot(pigNumb.point[1])
-    pigNumb.point <- pigNumb.point %>% st_drop_geometry() %>% 
-      dplyr::select(rcFid_1km, pigs_km) %>%
-      rename(pigs_per_km = pigs_km) %>%
-      filter(!is.na(rcFid_1km))
-    nonBov1km <- dplyr::full_join(nonBov1km, pigNumb.point
-                                  , relationship = "many-to-many") %>%
-      filter(!is.na(region))
-    
+    head(nonBov1kmGBprop2)
     ## use the proportions of different roles of different pigs and sheep to determine those in scotland
     nonBov1km.spl <- nonBov1kmGBprop2 %>% 
       st_drop_geometry() %>%
       filter(total.pigs..c47. > 0) %>%
       dplyr::select(contains(c("breeding.pig", "fattening.pig"))) %>%
-      ### get totals, and then proportion of each caetgories
+      ### get totals, and then proportion of each categories
       mutate(total = rowSums(., na.rm = T))
-    nonBov1km.s1 <- mean(nonBov1km.spl$breeding.pigs..incl..gilts.and.boars...c45. / nonBov1km.spl$total)
-    ### breeding pigs make up 0.91 of all pigs
+    # Calculate percentages
+    percentages <- nonBov1km.spl %>%
+      mutate_at(vars(-total), ~ . / total * 100)
+    # get the final sums
+    percentages2.pigs <- colMeans(percentages[, 1:(ncol(percentages)-1)])
+    ### breeding pigs make up 0.9133 of all pigs
     
+    #### sheep proportions
     ## use the proportions of different roles of different pigs and sheep to determine those in scotland
     nonBov1km.spl <- nonBov1kmGBprop2 %>% 
       st_drop_geometry() %>%
       filter(total.pigs..c47. > 0) %>%
       dplyr::select(contains(c("ewe", "sheep", "lamb", "ram"))) %>%
-      ### get totals, and then proportion of each caetgories
+      dplyr::select(-total.sheep.and.lambs..c44.) %>%
+      ### get totals, and then proportion of each categories
       mutate(total = rowSums(., na.rm = T))
-    nonBov1km.s1 <- mean(nonBov1km.spl$breeding.ewes.intended.for.further.breeding..c38. / nonBov1km.spl$total)
-    nonBov1km.s2 <- mean(nonBov1km.spl$breeding.ewes.intended.for.slaughter..c39. / nonBov1km.spl$total)
-    nonBov1km.s3 <- mean(nonBov1km.spl$ewes.intended.for.first.time.breeding..c40. / nonBov1km.spl$total)
-    nonBov1km.s4 <- mean(nonBov1km.spl$non.breeding.sheep..1yr..male.and.female...c42. / nonBov1km.spl$total)
-    nonBov1km.s5 <- mean(nonBov1km.spl$rams.for.service..c41. / nonBov1km.spl$total)
-    nonBov1km.sum <- sum(nonBov1km.s1, nonBov1km.s2, nonBov1km.s3, nonBov1km.s4, nonBov1km.s5)
-    nonBov1km.s1 <- nonBov1km.s1 / nonBov1km.sum
-    nonBov1km.s2 <- nonBov1km.s2 / nonBov1km.sum
-    nonBov1km.s3 <- nonBov1km.s3 / nonBov1km.sum
-    nonBov1km.s4 <- nonBov1km.s4 / nonBov1km.sum
-    nonBov1km.s5 <- nonBov1km.s5 / nonBov1km.sum
+    # Calculate percentages
+    percentages <- nonBov1km.spl %>%
+      mutate_at(vars(-total), ~ . / total * 100)
+    # get the final sums
+    percentages2.sheep <- colMeans(percentages[, 1:(ncol(percentages)-1)])
+    percentages2.sheep
     ### breeding ewes make up 0.54 and 0.36, first time breeders are 0.03, non-breeding sheep are 0.01
     ### and rams for service are 0.06 
     
-    nonBov1km.part2 <- nonBov1km %>%
-      # deal with pig proportions
-      mutate(pigs_per_km = ifelse(is.na(pigs_per_km), 0, pigs_per_km)) %>%
-      mutate(breed_pigs_gilts_boars = ifelse(pigs_per_km > 1
-                                             , pigs_per_km * 0.91
-                                             , breeding.pigs..incl..gilts.and.boars...c45.)
-             , fattening_pigs_piglets = ifelse(pigs_per_km > 1
-                                               , pigs_per_km * 0.09
-                                               , fattening.pigs.and.piglets..includes.barren.sows...c46.)
-             , breed_pigs_gilts_boars = ifelse(pigs_per_km == 1, 1, breed_pigs_gilts_boars)) %>%
-      # deal with sheep proportions
-      mutate(sheep_per_km = ifelse(is.na(sheep_per_km), 0, sheep_per_km)) %>%
-      mutate(breed_ewes_extra = ifelse(sheep_per_km > 1
-                                       , sheep_per_km * 0.54
-                                       , breeding.ewes.intended.for.further.breeding..c38.)
-             , breed_ewes_slaughter = ifelse(sheep_per_km > 1
-                                             , sheep_per_km * 0.36
-                                             , breeding.ewes.intended.for.slaughter..c39.)
-             , first_time_ewes = ifelse(sheep_per_km > 1
-                                        , sheep_per_km * 0.03
-                                        , ewes.intended.for.first.time.breeding..c40.)
-             , non_breed_sheep = ifelse(sheep_per_km > 1
-                                        , sheep_per_km * 0.01
-                                        , non.breeding.sheep..1yr..male.and.female...c42.)
-             , rams = ifelse(sheep_per_km > 1
-                             , sheep_per_km * 0.06
-                             , rams.for.service..c41.)
-             , breed_ewes_extra = ifelse(sheep_per_km == 1, 1, breed_ewes_extra))
+    head(nonBov1kmSW)
+    # multiply, to get final values for different groups and roles
+    ## for pigs
+    nonBov1kmSW.pigs <- bind_cols(lapply(1:length(percentages2.pigs), function(j){
+      nonBov1kmSW2 <- percentages2.pigs[j] / 100 * nonBov1kmSW$pig_per_km
+    })) %>% as.data.frame() %>%
+      setNames(names(percentages2.pigs))
     
-    st_write(nonBov1km.part2, "nonBov1km2.gpkg", append=TRUE)
+    ## for sheep
+    nonBov1kmSW.sheep <- bind_cols(lapply(1:length(percentages2.sheep), function(j){
+      percentages2.sheep[j] / 100 * nonBov1kmSW$sheep_per_km
+    })) %>% as.data.frame() %>%
+      setNames(names(percentages2.sheep))
+    
+    # st_write(nonBov1km.part2, "nonBov1km2.gpkg", append=F)
     
     ###### 2b5c - proportional relationship of non-bovine animals - Poultry
     ## ------------ Notes --------------  ##
@@ -1200,86 +1092,69 @@ if(part2AnimalGrid){
     ## http://apha.defra.gov.uk/documents/surveillance/diseases/lddg-pop-report-avian2020.pdf
     ## ------------ ----- --------------  ##
     
-    poultryNumb.poly <- st_read(file.path(currPath, "poultry_numbers.gpkg")) %>%
-      dplyr::select(poul_numb) %>%
-      mutate(poultry_per_km = as.numeric(poul_numb)) %>%
-      st_make_valid() %>%
-      mutate(area = st_area(.)) %>%
-      mutate(km_area = as.vector(area/1000000)) %>%
-      mutate(total_poultry = poultry_per_km * km_area)
-    ## convert poultry high to medium and low
-    poultryNumb.poly <- poultryNumb.poly %>%
-      mutate(poul_numb_high = poultry_per_km
-             , poul_numb_mid = ifelse(poul_numb == 39000, 20988
-                                      , ifelse(poul_numb == 2500, 1900
-                                               , ifelse(poul_numb == 1300, 950
-                                                        , ifelse(poul_numb == 600, 425
-                                                                 , ifelse(poul_numb == 250, 150
-                                                                          , ifelse(poul_numb == 50, 25, 0
-                                                                          ))))))
-             , poul_numb_low = ifelse(poul_numb == 39000, 2501
-                                      , ifelse(poul_numb == 2500, 1301
-                                               , ifelse(poul_numb == 1300, 601
-                                                        , ifelse(poul_numb == 600, 251
-                                                                 , ifelse(poul_numb == 250, 51
-                                                                          
-                                                                          , ifelse(poul_numb == 50, 1, 0
-                                                                          )))))))
-    
-    # get totals 
-    sum(poultryNumb.poly$total_poultry) / 1000000
-    head(poultryNumb.poly)
-    plot(poultryNumb.poly[1])
-    poultryNumb.poly
-    st_bbox(poultryNumb.poly); st_crs(poultryNumb.poly)
-    # convert to 27700
-    poultryNumb.poly27700 <- st_transform(poultryNumb.poly, 27700)
-    poultryNumb.rast <- st_rasterize(poultryNumb.poly27700 %>% 
-                                       dplyr::select(poultry_per_km)
-                                     , dy = 1000, dx = 1000) %>%
-      rast()
-    poultryNumb.rast
-    plot(poultryNumb.rast)
-    # save
-    writeRaster(poultryNumb.rast, file.path(currPath, "poultry_numbers.tif")
-                , overwrite=TRUE)
-    
-    # convert to point data
-    poultryNumb.point <- raster(poultryNumb.rast) %>% rasterToPoints() %>%
-      # Convert SpatialPointsDataFrame to sf object
-      as.data.frame() %>%
-      st_as_sf(coords = c("x", "y"))
-    st_crs(poultryNumb.point) <- st_crs(nonBov1kmGBprop2)
-    poultryNumb.point <- st_intersection(nonBov1kmGBprop2, poultryNumb.point)
-    plot(poultryNumb.point[1])
-    poultryNumb.point <- poultryNumb.point %>% st_drop_geometry() %>% 
-      dplyr::select(rcFid_1km, poultry_per_km) %>%
-      filter(!is.na(rcFid_1km))
-    nonBov1km <- dplyr::full_join(nonBov1km.part2, poultryNumb.point
-                                  , relationship = "many-to-many") %>%
-      filter(!is.na(region))
-    
-    nonBov1km.part3 <- nonBov1km %>%
-      # deal with poultry
-      mutate(poultry_per_km = ifelse(is.na(poultry_per_km), total.poultry..c48., poultry_per_km)) %>%
-      # limit to 2500
-      mutate(poultry_per_km = ifelse(poultry_per_km > 2500, 2501, poultry_per_km))
-    
-    st_write(nonBov1km.part3, "nonBov1km3.gpkg", append=TRUE)
+    ### combine the values of all animals
+    nonBov1kmSW.end <- bind_cols(nonBov1kmSW %>% dplyr::select(rcFid_1km, poul_per_km) %>%
+                                   rename("total.poultry..c48." = poul_per_km)
+                                 , nonBov1kmSW.pigs
+                                 , nonBov1kmSW.sheep)
+    head(nonBov1kmSW.end)
     
   } # end of non-bovine grid
   
   ##### 2b6 - add non-bovine animals back in #####
-  nonBov1km.part3 <- st_read("nonBov1km3.gpkg")
-  animalsFinal <- cows1kmGB %>% 
-    merge(., nonBov1km.part3 %>% dplyr::select(rcFid_1km, region, breed_pigs_gilts_boars:poultry_per_km) %>%
-            st_drop_geometry()
-          , by = "rcFid_1km") %>%
-    relocate(rcFid_1km, region)
-  names(animalsFinal)
+  ## ------------ Notes --------------  ##
+  ## There are four important elements for below:
+  ## non-bovine from Scotland and Wales
+  ## non-bovine from England
+  ## bovine from Scotland and Wales
+  ## bovine from England
+  
+  ## get all those dfs separately
+  ## ------------ ----- --------------  ##
+  
+  ## non-bovine from Scotland and Wales
+  nbSW <- nonBov1kmSW.end
+  plot(nbSW[2])
+  ## non-bovine from England
+  nbE <- st_read(file.path(currPath, "nonBovine_grid_2020_1km.gpkg")) %>%
+    # restrict to England, and non-bovine
+    filter(!rcFid_1km %in% nbSW$rcFid_1km) %>%
+    dplyr::select(any_of(c(names(nbSW))))
+  plot(nbE[2])
+  ## bovine from Scotland and Wales
+  bSW <- st_read(file.path(currPath, "cow_grid_2020_1km.gpkg"))  %>%
+    # restrict to non-England, and bovine
+    filter(rcFid_1km %in% nbSW$rcFid_1km)
+  names(bSW)
+  ## bovine from England
+  bE <- st_read(file.path(currPath, "cow_grid_2020_1km.gpkg"))  %>%
+    # restrict to England
+    filter(!rcFid_1km %in% nbSW$rcFid_1km)
+  names(bE)
+  
+  ## bind cows and non-bovine
+  nbAll <- bind_rows(nbSW, nbE)
+  bAll <- bind_rows(bSW, bE)
+  stopifnot(length(which(names(nbAll) %in% names(bAll))) == 2)
+  
+  ### merge both
+  animalsFinal <- merge(bAll
+                        , nbAll %>% st_drop_geometry()
+                        , by = "rcFid_1km"
+                        , all = T) %>% filter(!st_is_empty(.))
+  head(animalsFinal)
+  sort(unique(animalsFinal$region))
+  class(animalsFinal)
+  apply(animalsFinal %>% st_drop_geometry(), 2, function(x) max(x, na.rm = TRUE))
   
   # save 
   st_write(animalsFinal, file.path(currPath, "all_animals_1km.gpkg"), append = F)
+  
+  # tidy
+  rm(bSW, bE, nbSW, nbE,nonBov1kmGB.prop2, nonBov1kmGB2, nbAll, bAll
+     , nonBov1kmSW
+     , percentages, percentages2.pigs, percentages2.sheep)
+  gc()
   
   # write readme
   sink(file = NULL)
@@ -2508,10 +2383,16 @@ if(part4Enteric){
   head(dairyGEcheck2)
   # check the final amount
   colSums(dairyGEcheck2[, 3:ncol(dairyGEcheck2)])
+  table(colSums(dairyGEcheck2[, 3:ncol(dairyGEcheck2)]))
   table(as.matrix(dairyGEcheck2[, 3:ncol(dairyGEcheck2)]))
+  which(colSums(dairyGEcheck2[, 3:ncol(dairyGEcheck2)]) > 23)
+  cn <- names(dairyGEcheck2 %>% ungroup() %>%
+                dplyr::select(MJdayGEhoused_65:MJdayGElrg_85))[which(colSums(dairyGEcheck2[, 3:ncol(dairyGEcheck2)]) > 23)]
+  # save the names that meet the criteria
+  criteria.match <- cn
+  save(criteria.match, file = "critMatch.RData")
   
-  # some use more/less GE than suggested above (411/ 935: 44%)
-  # it appears that the general trend is that young animals e.g. cows < 6 months 
+  # it appears that the general trend is that young animals e.g. cows < 6 months (i.e., heifers)
   # need a higher energy (when compared to body weight) use when growing, but this could be justified
   
   ## ------------ Notes --------------  ##
@@ -2531,7 +2412,7 @@ if(part4Enteric){
   ## eq. 10.21 sheep (IPCC 2019)
   ## ------------ ----- --------------  ##
   
-  for(de in c(65, 70, 75, 80, 85)){
+  for(de in seq(65, 85, 1)){
     print(de)
     # extract just those columns from GEtableOut
     GEDE <- GEtableOut %>%
@@ -2542,8 +2423,8 @@ if(part4Enteric){
     Ym100 <- Ym/100
     # calculate GE * Ym * 365
     kgCH4GE <- (GEDE * Ym100 * 365)/55.65
-    # convert to CO2e
-    kgCO2GE <- kgCH4GE * 25
+    # convert to CO2e (using non-fossil origin AR6 2021 value: 27.2)
+    kgCO2GE <- kgCH4GE * 27.2
     
     if(de == 65){
       DEtable2 <- as.data.frame(cbind(animal = netEnergyTable$animal
@@ -2584,29 +2465,74 @@ if(part4Enteric){
     mutate(fitCriteria = if_else(Min <= 125.44 & Max >= 125.44, "Yes"
                                  , "NO"))
   head(dairyCH4)
+  
+  # refine to those that met the criteria earlier
+  dairyCH4.crit <- dairyCH4 %>%
+    dplyr::select(contains(criteria.match)) 
+  ## max min
+  dairyCH4.crit$min <- do.call(pmin, dairyCH4.crit)
+  dairyCH4.crit$max <- do.call(pmax, dairyCH4.crit)
+  dairyCH4.crit <- dairyCH4.crit %>%
+    mutate(fitCriteria = if_else(min <= 125.44 & max >= 125.44, "Yes"
+                                 , "NO"))
+  
   # for dairy cows, 125.44 kg CH4/head/year (GHGi, 2019) needs to be covered, which it is
   # for dairy heifers, 53.20 kg CH4/head/year (GHGi, 2019) needs to be covered, which it is
   
+  # use the scenario described in the '0 - select animal scenario' section 
+  # to give a per-animal enteric fermentation emission
+  
   # as we are going to use the scenario of 50% time housed with 75% DE and 50% grazing with 80% DE
   # see whether the half and half is ok
+  ## ------------ Notes --------------  ##
+  ## you can comment out this section to test other values
+  ## DEinside <- 83 # 'housed' value
+  ## DEoutside <- 79 # outside value
+  ## inDE <- paste0("housed_", DEinside)
+  ## outDE <- paste0("sml_", DEoutside)
+  ## ------------ ----- --------------  ##
+
   dairyCH4v2 <- dairyCH4 %>%
-    dplyr::select(animal, category, kgCH4GE.MJdayGEsml_75, kgCH4GE.MJdayGEhoused_80) %>%
-    mutate(kgCH4GE.50pcScen = (kgCH4GE.MJdayGEsml_75/2) + (kgCH4GE.MJdayGEhoused_80/2)) %>%
+    dplyr::select(animal, category
+                  , contains(c(inDE, outDE)))
+  ## should be four columns. If so, rename
+  if(ncol(dairyCH4v2) == 4){
+    names(dairyCH4v2)[3:4] <- c(paste0("kgCH4GE.MJday", c("in", "out"))) 
+    names(dairyCH4v2)
+  } else {
+    stop("wrong columns in 4a2")
+  }
+  dairyCH4v2 <- dairyCH4v2 %>%
+    mutate(kgCH4GE.50pcScen = (kgCH4GE.MJdayout/2) + (kgCH4GE.MJdayin/2)) %>%
     rowwise() %>%
     mutate(litDifference = kgCH4GE.50pcScen - 125.44)
   head(dairyCH4v2)
+  # see with all possibilities
+  dairyCH4v3 <- dairyCH4 %>%
+    dplyr::select(-c(Min, Max, fitCriteria)) %>%
+    mutate(across(3:last_col(), ~ ./2)) %>%
+    # refine to just the criterai matched ones
+    dplyr::select(contains(c(criteria.match)))
   
   # stop("ouch")
   
-  # use this scenario to give a per-animal enteric fermentation emission
   # although lambs always housed
   CH4EntFerm <- DEtable2 %>%
-    dplyr::select(animal, category, UK.Region, kgCH4GE.MJdayGEsml_80, kgCH4GE.MJdayGEhoused_85) %>%
+    dplyr::select(animal, category, UK.Region
+                  , contains(c(inDE, outDE)))
+  ## should be five columns. If so, rename
+  if(ncol(CH4EntFerm) == 5){
+    names(CH4EntFerm)[4:5] <- c(paste0("kgCH4GE.MJday", c("in", "out"))) 
+    names(CH4EntFerm)
+  } else {
+    stop("wrong columns in 4a2")
+  }
+  CH4EntFerm <- CH4EntFerm %>%
     rowwise() %>%
-    mutate(kgCH4yr.50pcScen = ifelse(grepl("lamb", category), kgCH4GE.MJdayGEhoused_85
-                                     , (kgCH4GE.MJdayGEsml_80/2) + (kgCH4GE.MJdayGEhoused_85/2))) %>%
-    # convert to CO2e
-    mutate(kgCO2.50pcScen = kgCH4yr.50pcScen * 25)
+    mutate(kgCH4yr.50pcScen = ifelse(grepl("lamb", category), kgCH4GE.MJdayin
+                                     , (kgCH4GE.MJdayout/2) + (kgCH4GE.MJdayin/2))) %>%
+    # convert to CO2e (non-fossil fuel)
+    mutate(kgCO2.50pcScen = kgCH4yr.50pcScen * 27.2)
   head(CH4EntFerm)
   
   # save final per-animal amount of CH4 and CO2e enteric fermentation
@@ -2716,22 +2642,60 @@ if(part5ManureManagement){
     VStable <- VStable %>%
       mutate(both = both) %>%
       rename(!!nm := "both")
-    
   }
   head(VStable)
   
   # tidy
   rm(de, deProp, both, leftSide, UEGE, GEs, nm)
   
+  # load in criteria match
+  load("critMatch.RData")
+  
   # get means for all of the same animal, category
   summariseVS <- VStable %>%
     group_by(animal, category) %>%
     dplyr::summarise(across(starts_with("kgVS"), list(mean = ~ mean(., na.rm = TRUE)))) %>%
-    # dplyr::select(animal, category, contains(c("housed_80", "sml_80"))) %>%
-    filter(grepl("lactat", category))
+    filter(grepl("lactat", category)) %>%
+    # refine to just the criteria matched ones
+    dplyr::select(1:2, contains(c(gsub("MJdayGE", "", criteria.match))))
   head(summariseVS)
   
-  # from Appuhamy et al. (2018), the mean VS (of lactating dairy cows) was 5.73 kg/d
+  vss <- VStable %>%
+    filter(grepl("lactat", category)) %>%
+    # refine to just the criteria matched ones
+    dplyr::select(1:2
+                  , contains(c(gsub("MJdayGE", "", criteria.match)))
+    )
+  
+  ## ------------ Notes --------------  ##
+  ## from Appuhamy et al. (2018), the mean VS (of lactating dairy cows) was 5.73 kg/d,
+  ## with a SD of 1.79, and a min and max of 1.67 and 10.86, respectively. All of the
+  ## the values selected fit in between the 3.94 - 7.52 (mean +/- SD) range. Those that did not were removed
+  ## (see vss.criteria)
+  ## ------------ ----- --------------  ##
+  
+  UpperLim <- 7.52
+  lowerLim <- 3.94
+  
+  # see which are too high low, specifically
+  VScheck <- VStable %>%
+    filter(grepl("lactat", category)) %>%
+    # group by animal and category, to get average regardless of region
+    group_by(animal, category) %>%
+    summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) %>%
+    mutate(across(where(is.numeric), ~ ifelse(. > lowerLim & . < UpperLim, 1, 0)))
+  
+  # check the final amount
+  colSums(VScheck[, 3:ncol(VScheck)])
+  table(colSums(VScheck[, 3:ncol(VScheck)]))
+  table(as.matrix(VScheck[, 3:ncol(VScheck)]))
+  which(colSums(VScheck[, 3:ncol(VScheck)]) == 24)
+  cn <- names(VScheck %>% ungroup() %>%
+                dplyr::select(kgVSdayhoused_65:kgVSdaylrg_85))[which(colSums(VScheck[, 3:ncol(VScheck)]) == 24)]
+  # reduce criteria match to ones that match both the literature stated EF and VS quantities
+  criteria.match2 <- criteria.match[which(grepl(paste(gsub("kgVSday", "", as.character(cn)), collapse =  "|"), gsub("MJdayGE", "", criteria.match)))]
+  criteria.match2 <- gsub("MJdayGE", "", criteria.match2)
+  criteria.match2
   
   # save tables
   # average VS per day
@@ -2767,14 +2731,17 @@ if(part5ManureManagement){
   ## '0 - select animal scenario' section above
   ## ------------ ----- --------------  ##
   
+  # stop("before VS summary")
+  
   # set names to keep
   insideName <- paste0("kgVSdayhoused_", DEinside)
   outsideName <- paste0("kgVSdaysml_", DEoutside)
+  cat("inside value =", insideName, "|", "outside value =", outsideName, "\n")
   
   VStableScen <- VStable %>%
     dplyr::select(animal, category, UK.Region
-                  , (all_of(insideName))
-                  , (all_of(outsideName))) %>%
+                  , (all_of(c(insideName)))
+                  , (all_of(c(outsideName)))) %>%
     rename("kgVSdayIn" = insideName
            , "kgVSdayOut" = outsideName) %>%
     # get the 6-month value of each 
@@ -2788,10 +2755,7 @@ if(part5ManureManagement){
   VStableScen <- VStableScen %>%
     dplyr::select(-c(kgVSdayIn, kgVSdayOut))
   head(VStableScen)
-  
-  # tidy
-  rm(GEDE)
-  
+
   ###### 5c - B0 (maximum methane producing capacity) ######
   ## ---------- notes ---------- # 
   ## Default B0 values are used from IPCC (2019) Table 10.16
@@ -2959,24 +2923,15 @@ if(part5ManureManagement){
   summariseCH <- sixMonthMMCH4 %>%
     filter(grepl("dairy", category)| grepl("dairy", animal) & category != "calf") %>%
     group_by(animal, category) %>%
-    dplyr::summarise(across(starts_with("MMkgCH6"), list(mean = ~ mean(., na.rm = TRUE))))
+    dplyr::summarise(across(starts_with("MMkgCH6"), list(mean = ~ mean(., na.rm = TRUE)
+                                                         , min = ~ min(., na.rm = TRUE)
+                                                         , max = ~ max(., na.rm = TRUE))))
   head(summariseCH)
-  
-  # get range
-  CHcheckMM <- summariseCH %>% 
-    rowwise %>% 
-    do(as.data.frame(.) %>% { 
-      subs <- select(., MMkgCH6MnIn_mean)
-      mutate(., Min = subs %>% min,
-             Max = subs %>% max) 
-    } ) %>%
-    ungroup
-  head(CHcheckMM)
-  
+
   ###### 5f - convert CH4 to CO2e ######
-  # convert to CO2e
+  # convert to CO2e (non-fossil fuel: 27.2)
   sixMonthMMCO2e <- sixMonthMMCH4 %>%
-    mutate(across(where(is.numeric), ~ . * 25))
+    mutate(across(where(is.numeric), ~ . * 27.2))
   # rename
   names(sixMonthMMCO2e) <- gsub("MMkgCH", "MMkgCO2e", names(sixMonthMMCO2e))
   head(sixMonthMMCO2e)
@@ -3283,7 +3238,13 @@ if(part6excretions){
   names(Nintake.retain.excreteCows) <- sub("kgNExcreteDay_kgNinDay", "kgNExcreteDay_", names(Nintake.retain.excreteCows))
   head(Nintake.retain.excreteCows)
   # check minimum of each column
-  apply(Nintake.retain.excreteCows,2,min)
+  apply(Nintake.retain.excreteCows, 2, min)
+  
+  ## ------------ Notes --------------  ##
+  ## you can comment out this section to test other values
+  DEinside <- 83 # 'housed' value
+  DEoutside <- 79 # outside value
+  ## ------------ ----- --------------  ##
   
   # get yearly values based on scenario
   ## extract the two bits required
@@ -3301,6 +3262,16 @@ if(part6excretions){
     ## sum together, to get the year total
     mutate(kgNExcreteYr = kgNExcreteYr_housed + kgNExcreteYr_sml)
   head(NexcreteCows)
+  
+  # should be near: 130.7 kg N/ dairy cow (Bougouin et al., 2022)
+  ## get means for all of the same animal, category
+  summariseN0 <- NexcreteCows %>%
+    group_by(animal, category) %>%
+    dplyr::summarise(across(where(is.numeric)
+                            , list(mean = ~ mean(., na.rm = TRUE)))) %>%
+    filter(grepl("dairy", category)) %>%
+    dplyr::select(animal, category, contains("ExcreteYr"))
+  head(summariseN0)
   
   # tidy
   rm(Nintake.retainCows, Nintake.retain.excreteCows, NretainCows)
@@ -3351,7 +3322,7 @@ if(part6excretions){
     filter(grepl("dairy", category)) %>%
     dplyr::select(animal, category, contains("ExcreteYr"))
   head(summariseN)
-  # should be near: 89 kg N/cow
+  # should be near: 106 kg N/cow
   
   # save
   fwrite(excreteNcombined
@@ -3462,8 +3433,8 @@ if(part6excretions){
   NemissionsGrazFinal <- NemissionsGraz %>%
     # add direct and indirect together
     mutate(grazEmisYr_kgN2O = dirNemiskgN2O + leachN_kgN2O + volaN_kgN2O) %>%
-    # times all by 298 to convert to CO2e
-    mutate(grazEmisYr_kgCO2e = grazEmisYr_kgN2O * 298)
+    # times all by 264 to convert to CO2e
+    mutate(grazEmisYr_kgCO2e = grazEmisYr_kgN2O * 264)
   head(NemissionsGrazFinal)
   
   # select certain columns
@@ -3500,7 +3471,7 @@ if(part6excretions){
     'leachN_kgN2O' = annual indirect N emissions, in kg N2O, from leaching of the excreta
     'volaN_kgN2O' = annual indirect N emissions, in kg N2O, from volatisation of the excreta
     'grazEmisYr_kgN2O' = total (direct + indirect) N emissions, in kg N2O, from grazing 
-    'grazEmisYr_kgCO2e' = total (direct + indirect) N emissions, in kg CO2e, from grazing. A GWP of 298 was used to convert from N2O to CO2e 
+    'grazEmisYr_kgCO2e' = total (direct + indirect) N emissions, in kg CO2e, from grazing. A GWP of 264 was used to convert from N2O to CO2e 
 
   Data: per-animal N grazing emissions
   units: CO2e emissions per year per animal")
@@ -3531,11 +3502,17 @@ if(part6excretions){
   ## ------------ ----- --------------  ##
   
   ###### first (test) long multiplication method ######
-  # make long
+  # make long, after combing to get region
+  reg <- st_read("data_in/animals/nonBovine_grid_2020_1km.gpkg") %>%
+    dplyr::select(rcFid_1km, region) %>% st_drop_geometry()
+  animalGrid <- animalGrid %>%
+    merge(., reg, all = F)
+  
   animalGridLong <- animalGrid %>%
     st_drop_geometry() %>%
     pivot_longer(!c(rcFid_1km, region))
   head(animalGridLong)
+  # stop("animal grid")
   
   # merge the two dataframes, ensuring regions match
   animalGridExcreteN <- animalGridLong %>% as.data.frame() %>%
@@ -3581,6 +3558,7 @@ if(part6excretions){
   
   ## get all different possible regions
   ukRegionsPossible <- unique(animalGrid$region)
+  ukRegionsPossible <- na.omit(ukRegionsPossible)
   
   x <- "Highlands_and_Islands"
   ### run it through a function, extracting one region at a time
@@ -3681,6 +3659,16 @@ if(part6excretions){
   spatialGridN <- ghgGridGB %>%
     merge(., regionsGridNitrogen, by = "rcFid_1km")
   head(spatialGridN)
+  
+  ## check the example and the actual match
+  x1 <- sumExcreteN %>%
+    filter(rcFid_1km == "487500_215500")
+  x2 <- spatialGridN %>%
+    filter(rcFid_1km == "487500_215500")
+  head(x1)
+  head(x2)
+  stopifnot(x1$total1km_kgN == x2$totalN)
+  
   ### save
   st_write(spatialGridN, file.path(savePath, "spatialN1km_kgN.gpkg"), append = F)
   
@@ -4837,8 +4825,8 @@ if(part7fertiliserUse){
     mutate(across(directN20_kgkm2:kgN2O_N_leach, ~ . * 44/28, .names = "finN2O_{.col}")) %>%
     # get final value for combination of background and direct emissions, from volatisation, and from leaching
     mutate(totalN20_kgkm2 = finN2O_directN20_kgkm2 + finN2O_N2O_kgkm_fromNO + finN2O_N2O_kgkm2_fromNH3 + finN2O_kgN2O_N_leach) %>%
-    # to get the amunt in CO2e, times by 298
-    mutate(totalCO2e_kgkm2 = totalN20_kgkm2 * 298)
+    # to get the amunt in CO2e, times by 264
+    mutate(totalCO2e_kgkm2 = totalN20_kgkm2 * 264)
   
   # add liming CO2e values in
   liming <- st_read(file.path(savePath, "liming_eval.gpkg"))
