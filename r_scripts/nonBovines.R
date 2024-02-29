@@ -42,7 +42,7 @@ rm(list = ls())
 #### 0 - load libraries ####
 ## automatic install of packages if they are not installed already
 list.of.packages <- c(
-  "terra", "stars", "mapview"
+  "terra", "stars", "mapview", "raster"
   , "dplyr", "sf", "ggplot2"
   , "tictoc", "purrr", "tidyr"
   , "parallel", "doParallel", "foreach" # parallel loops
@@ -66,8 +66,15 @@ rm(list.of.packages, new.packages, package.i)
 swPath <- "C:/Users/paueva/OneDrive - UKCEH/Data/uk/boundary"
 # animal path
 animalPath <- "C:/Users/paueva/Documents/ArcGIS/Projects/agland2"
+# animal path
+savePath <- "results/animals"
 
-#### 0 - load functions ####
+#### 0 - load the GB grid ####
+## ------------ Notes --------------  ##
+## The GB grid should have been created in the 'ghgtool_setup.R' script, and
+## saved as 'agland_grid_ESW.gpkg'. That grid needs to be loaded.
+## ------------ ----- --------------  ##
+ghgGrid <- st_read("data_in/agland_grid_ESW.gpkg")
 
 #### 1 - dissolve scotland and wales ####
 swShape <- st_read(file.path(swPath, "sw.gpkg"))
@@ -236,73 +243,67 @@ st_write(scotland.outline, file.path(swPath, "pps", "scot_outline.gpkg")
 ## a range were used. The ranges were:
 ## 0-50, 51-250, 251 - 600, 601-1300, 1301-2500, 2501-39474 for poultry
 ## http://apha.defra.gov.uk/documents/surveillance/diseases/lddg-pop-report-avian2020.pdf
+
+## the county boundaries for both wales and scotland were intersected in QGIS, giving the 
+## total number of polygons that intersected each other. The "native:intersection"  
+## function was used. These intersected polygons are imported below.
 ## ------------ ------------- --------------  ##
 
 # list the shapefiles that were unioned
-union.list <- list.files(file.path(swPath, "pps", "qgis")
-                         , pattern = "_union.gpkg"
+union.list <- list.files(file.path(swPath, "pps", "qgis", "final")
+                         , pattern = "_intersection.shp"
                          , full.names = T)
 union.list
 stopifnot(length(union.list) == 6)
+# stop("union list created")
 
 ## for each, load and assign the correct final value, and tidy up the df
-i.list <- list()
+i.list <- list(); fin.list <- list()
 for(i in 1:length(union.list)){
   x <- union.list[[i]]
   xAn <- gsub("^(.+)_s.*|_w.*", "\\1", basename(x))
+  xAn <- gsub("fix_", "", xAn)
   xAnPer <- paste0(xAn, "_per_km")
   xReg <- ifelse(grepl("wale", x), "wales", "scotland")
   cat(x, paste0("\n", xAn, " | ", xReg), "\n")
   df.in <- st_read(x, quiet = T)
+  head(df.in)
   
-  if(grepl("pig_scot_union|pig_wales_union", x)){
-    df.in[is.na(df.in$pigs_per_km), "pigs_per_km"] <- 1
-  } else if(grepl("poul_scot_union|poul_wales_union", x)){
+  if (length(which(grepl("pigs_per_k|poul_numb|sheep_numb", names(df.in)))) == 0) {
+    stop("Required column names are not present.")
+  }
+  
+  if(grepl("pig_scot|pig_wales", x)){
+    df.in[is.na(df.in$pigs_per_k), "pigs_per_k"] <- 1
+  } else if(grepl("poul_scot|poul_wales", x)){
     df.in[is.na(df.in$poul_numb), "poul_numb"] <- 50
-  } else if(grepl("sheep_scot_union|sheep_wales_union", x)){
+  } else if(grepl("sheep_scot|sheep_wales", x)){
     df.in[is.na(df.in$sheep_numb), "sheep_numb"] <- 30
   }
   
+  # determine the 'county' column - use either a Welsh or Scottish county name
+  data <- df.in %>% st_drop_geometry() %>%
+    dplyr::select(contains(c("NAME", "name")))
+  countE <- colnames(data)[which(!is.na(colnames(data)[apply(data == "Dumfries" | data == "Angus" | data == "Gwynedd", 2, any)]))]
+  
   # keep only the animals per km column
   df.in2 <- df.in %>%
-    dplyr::select(any_of(c("sheep_numb", "pigs_per_km", "poul_numb"))) %>%
+    st_set_geometry(NULL) %>%  # Drop geometry temporarily
+    rename(county = !!countE)
+  
+  df.in2 <- df.in2 %>% bind_cols(df.in %>% dplyr::select(geometry), .) %>%
+    dplyr::select(any_of(c("sheep_numb", "pigs_per_k", "poul_numb"))
+                  , county) %>%
     rename(!!xAnPer := 1) %>%
     # convert to 27700
     st_transform(27700) %>%
     mutate(area = st_area(.)) %>%
     mutate(km_area = as.vector(area/1000000)) %>%
     dplyr::select(-area)
+  head(df.in2)
   
   # stop if NAs still exist
   if(anyNA(df.in2[, 1])){stop("NAs here")}
-  
-  # get centroids, to be able to see the specific region of Wales / Scotland
-  df.cent <- df.in2 %>%
-    st_centroid()
-  ## extract the county info
-  if(grepl("wales", x)){
-    # intersect polygons with points, keeping the information from both
-    df.county <- st_intersection(walesReg2, df.in2 %>% st_make_valid()) %>%
-      rename(county = broad_file_name) %>%
-      dplyr::select(-broad_region) %>%
-      mutate(area = st_area(.)) %>%
-      mutate(km_area = as.vector(area/1000000)) %>%
-      dplyr::select(-area)
-    # ggplot() +
-    #   geom_sf(data = df.county, col = "blue")
-    # ggplot() +
-    #   geom_sf(data = walesReg2, col = "red")
-  } else if(grepl("scot", x)){
-    df.county <- st_intersection(scotReg, df.in2) %>%
-      rename(county = NAME) %>%
-      dplyr::select(-DESCRIPTIO) %>%
-      mutate(area = st_area(.)) %>%
-      mutate(km_area = as.vector(area/1000000)) %>%
-      dplyr::select(-area)
-    # ggplot() +
-    #   geom_sf(data = scotReg, col = "red")
-  }
-  # str(df.county)
   
   # need to determine the most accurate numbers. This was done using
   # published government statistics, and the maps 
@@ -316,7 +317,7 @@ for(i in 1:length(union.list)){
   
   # convert top values to middle and lowest values
   if(xAn == "sheep"){
-    sheepNumb <- df.numb <- df.county %>%
+    sheepNumb <- df.numb <- df.in2 %>%
       mutate(sheep_per_km_high = sheep_per_km
              , sheep_per_km_mid = ifelse(sheep_per_km == 460, 350
                                          , ifelse(sheep_per_km == 240, 180
@@ -337,9 +338,10 @@ for(i in 1:length(union.list)){
              , total_mid = sheep_per_km_mid * km_area
              , total_low = sheep_per_km_low * km_area)
     
-  } else if(xAn == "poul") {
+  } else if(xAn %in% c("poul", "poultry")) {
     
-    poultryNumb <- df.numb <- df.county %>%
+    poultryNumb <- df.numb <- df.in2 %>%
+      rename(any_of(c("poul_per_km" = "poultry_per_km"))) %>%
       mutate(poul_per_km = as.numeric(poul_per_km)) %>%
       mutate(poul_per_km_high = poul_per_km
              , poul_per_km_mid = ifelse(poul_per_km == 39000, 20988
@@ -363,7 +365,7 @@ for(i in 1:length(union.list)){
     
   } else if(xAn == "pig"){
     
-    pigNumb <- df.numb <- df.county %>%
+    pigNumb <- df.numb <- df.in2 %>%
       mutate(pig_per_km_high = pig_per_km
              , pig_per_km_mid = ifelse(pig_per_km == 430, 315
                                        , ifelse(pig_per_km == 200, 140
@@ -383,18 +385,38 @@ for(i in 1:length(union.list)){
     
   }
   
+  plot(df.numb[1])
+  str(df.numb)
+  # stop("before df.numb save")
+  
+  # saved final dfs
+  fin.list[[i]] <- df.numb
+  st_write(df.numb
+           , gsub(".shp", ".gpkg", gsub("intersection", "final", file.path(dirname(x), basename(x))))
+           , append = F)
+  
+  if(xAn == "poultry"){
+    xAn <- "poul"
+  }
+  
   # get totals of animals
-  xSums <- df.numb %>%
+  xSums <- df.numb %>% st_drop_geometry() %>%
     group_by(county) %>%
     summarise(sumHigh = sum(total_high)
               , sumMid = sum(total_mid)
-              , sumLow = sum(total_low)) %>% st_drop_geometry() %>%
+              , sumLow = sum(total_low)) %>%
     mutate(animal = xAn)
- 
-
+  
+  # saved summed dfs
   i.list[[i]] <- xSums
   
 } # end 'i'
+
+## ------------ Notes --------------  ##
+## 'anmials_area.csv' is saved below to determine the non-bovines animals per grid
+## square. The calculation were done in the 'anmials_area.xlsx', and then loaded 
+## back in as the number below.
+## ------------ ----- --------------  ##
 
 # merge all together
 i.bound <- bind_rows(i.list) %>%
@@ -402,3 +424,176 @@ i.bound <- bind_rows(i.list) %>%
 ## save
 fwrite(i.bound, file.path("data_in", "animals", "anmials_area.csv")
        , row.names = F)
+
+## ------------ Notes --------------  ##
+## Based on the calculations in 'anmials_area.xlsx', it has been determined out
+## of the 'low', 'mid' and 'high' values which to use, and any adjustments
+## to get closest to recorded values (in government reports)
+
+## for scot sheep, it is 'high', with a -0.09 multiplier
+## for scot poul, 'low' -0.2 multiplier
+## for scot pigs, 'mid' -0.02 multiplier
+## for wales sheep, it is 'high', with a 0.72 multiplier
+## for wales poul, 'low' -0.08 multiplier
+## for wales pigs, 'low' 0.62 multiplier
+## ------------ ----- --------------  ##
+
+# list the shapefiles that were unioned
+final.list <- list.files(file.path(swPath, "pps", "qgis", "final")
+                         , pattern = "_final.gpkg"
+                         , full.names = T)
+final.list
+stopifnot(length(final.list) == 6)
+# stop("list created")
+
+nonBov1km.list <- list()
+for(i in 1:length(final.list)){
+  
+  xIn <- final.list[[i]]
+  print(xIn)
+  xDf <- st_read(xIn, quiet = T)
+  
+  # animal name
+  xAn <- gsub("^(.+)_s.*|_w.*", "\\1", basename(xIn))
+  xAn <- gsub("fix_", "", xAn)
+  
+  # country name
+  xCn <- ifelse(grepl("wale", basename(xIn)), "wales", "scotland")
+  
+  if(i == 7 & (grepl("wales", xIn))){
+    stop("s")
+  }
+  
+  # get relevant column, adjust be recommended amount, and check compared to 
+  # national values
+  
+  if(grepl("scot", xIn)){
+    
+    if(grepl("sheep", xIn)){
+      xDf.total <- xDf %>%
+        dplyr::select(total_high) %>%
+        mutate(total_adj = total_high * (1 + -0.08649)) 
+      # check the sum (should be 5,010,000)
+      sum(xDf.total$total_adj)
+      
+    } else if(grepl("poul", xIn)){
+      
+      xDf.total <- xDf %>%
+        dplyr::select(total_low) %>%
+        mutate(total_adj = total_low * (1 + -0.19986)) 
+      # check the sum (should be 14,430,000)
+      head(xDf.total)
+      sum(xDf.total$total_adj)
+      
+    } else if(grepl("pig", xIn)){
+      
+      xDf.total <- xDf %>%
+        dplyr::select(total_mid) %>%
+        mutate(total_adj = total_mid * (1 + -0.02221)) 
+      # check the sum (should be 356,000)
+      sum(xDf.total$total_adj)
+      
+    }
+    
+  } else if(grepl("wales", xIn)){
+    
+    # remove English counties
+    xDf <- xDf %>%
+      filter(!county %in% c("Herefordshire", "Bristol", "Cheshire", "Gloucestershire"
+                            , "Merseyside", "Shropshire"))
+    
+    if(grepl("sheep", xIn)){
+      xDf.total <- xDf %>%
+        dplyr::select(total_high) %>%
+        mutate(total_adj = total_high * (1 + 0.71575)) 
+      # check the sum (should be 9,000,000)
+      sum(xDf.total$total_adj)
+      
+    } else if(grepl("poul", xIn)){
+      
+      xDf.total <- xDf %>%
+        dplyr::select(total_low) %>%
+        mutate(total_adj = total_low * (1 + -0.08)) 
+      # check the sum (should be 9,840,200)
+      sum(xDf.total$total_adj)
+      
+    } else if(grepl("pig", xIn)){
+      
+      xDf.total <- xDf %>%
+        dplyr::select(total_low) %>%
+        mutate(total_adj = total_low * (1 + 0.629))
+      # check the sum (should be 28,400)
+      sum(xDf.total$total_adj)
+      
+    }
+  }
+  
+  # convert to amount per km
+  xDf.total2 <- xDf.total %>%
+    # convert to 27700
+    st_transform(27700) %>%
+    mutate(area = st_area(.)) %>%
+    mutate(km_area = as.vector(area/1000000)) %>%
+    dplyr::select(-area) %>%
+    mutate(total_adj_km = total_adj/km_area)
+  head(xDf.total2)
+  
+  # convert to pixels
+  ## rasterise
+  nonBovineRast <- st_rasterize(xDf.total2 %>% 
+                                  dplyr::select(total_adj_km)
+                                , dy = 1000, dx = 1000) %>%
+    rast()
+  plot(nonBovineRast)
+  # save
+  # writeRaster(nonBovineRast, file.path(savePath, paste(xCn, xAn, "numbers.tif", sep = "_"))
+  #             , overwrite=TRUE)
+  
+  # convert to point data
+  nonBovPoint <- raster(nonBovineRast) %>% rasterToPoints() %>%
+    # Convert SpatialPointsDataFrame to sf object
+    as.data.frame() %>%
+    st_as_sf(coords = c("x", "y"))
+  st_crs(nonBovPoint) <- st_crs(ghgGrid)
+  st_crs(nonBovPoint)
+  # intersect
+  nonBovIntersect <- st_intersection(ghgGrid, nonBovPoint)
+  plot(nonBovIntersect[2])
+  nonBovIntersect <- nonBovIntersect %>% st_drop_geometry() %>% 
+    dplyr::select(rcFid_1km, total_adj_km, county) %>%
+    filter(!is.na(rcFid_1km))
+  sum(nonBovIntersect$total_adj)
+  
+  # animal_per_km
+  xAn <- ifelse(xAn == "poultry", "poul", xAn)
+  apk <- paste0(xAn, "_per_km")
+  
+  nonBov1km.list[[i]] <- dplyr::full_join(ghgGrid, nonBovIntersect
+                                , relationship = "many-to-many") %>%
+    filter(!is.na(total_adj_km)) %>%
+    rename(!!apk := total_adj_km)
+  head(nonBov1km.list[[i]])
+  # # save
+  # st_write(nonBov1km.list[[i]], file.path(savePath, paste(xCn, xAn, "numbers.gpkg", sep = "_"))
+  #             , append = F)
+}
+
+# merge them together
+animals.nms <- c("pig", "sheep", "poul")
+an.binds <- lapply(animals.nms, function(i){
+  # extract same animals from list
+  an.extract <- final.list[grepl(i, final.list)]
+  an.which <- which(final.list %in% an.extract)
+  stopifnot(length(an.extract) == 2)
+  an.bind <- bind_rows(nonBov1km.list[c(an.which)])
+  stopifnot(ncol(an.bind) == 3)
+  return(an.bind)
+})
+
+nonBov1kmSW <- Reduce(function(x, y) merge(x %>% st_drop_geometry(), y %>% st_drop_geometry(), all=TRUE)
+       , an.binds) %>%
+  merge(ghgGrid, .)
+str(nonBov1kmSW)
+# save
+st_write(nonBov1kmSW, file.path(savePath, "nonBov1kmSW.gpkg")
+         , append = F)

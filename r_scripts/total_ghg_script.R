@@ -122,7 +122,7 @@ part6excretions <- F
 ## 2. determine rainfall, crop type, and Soil Nitrogen Supply (SNS)
 ## 3. determine N use per km2 - derived from individual crops
 ## 4. calculate emissions based purely on assumed fertiliser
-part7fertiliserUse <- T
+part7fertiliserUse <- F
 
 # part 8 determines the emission and sequestration values based on non-agricultural land use
 part8landuse <- F
@@ -135,7 +135,8 @@ part9residue <- F
 # this includes on-farm fuel use, and potato storage
 part10onfarmenergy <- F
 
-part11combineemissions <- F
+# combine all the final emissions together
+part11combineemissions <- T
 
 if(runAll){
   createGrid <- part1LandCoverGrid <- part2AnimalGrid <- T
@@ -143,6 +144,9 @@ if(runAll){
   part6excretions <- part7fertiliserUse <- part8landuse <- T
   part9residue <- part10onfarmenergy <- part11combineemissions <- T
 }
+
+# Filter the objects to keep
+objKeep <- ls()[grep("part", ls())]
 
 #### 0 - select animal scenario ####
 ## ------------ Notes --------------  ##
@@ -2491,7 +2495,7 @@ if(part4Enteric){
   ## inDE <- paste0("housed_", DEinside)
   ## outDE <- paste0("sml_", DEoutside)
   ## ------------ ----- --------------  ##
-
+  
   dairyCH4v2 <- dairyCH4 %>%
     dplyr::select(animal, category
                   , contains(c(inDE, outDE)))
@@ -2755,7 +2759,7 @@ if(part5ManureManagement){
   VStableScen <- VStableScen %>%
     dplyr::select(-c(kgVSdayIn, kgVSdayOut))
   head(VStableScen)
-
+  
   ###### 5c - B0 (maximum methane producing capacity) ######
   ## ---------- notes ---------- # 
   ## Default B0 values are used from IPCC (2019) Table 10.16
@@ -2927,7 +2931,7 @@ if(part5ManureManagement){
                                                          , min = ~ min(., na.rm = TRUE)
                                                          , max = ~ max(., na.rm = TRUE))))
   head(summariseCH)
-
+  
   ###### 5f - convert CH4 to CO2e ######
   # convert to CO2e (non-fossil fuel: 27.2)
   sixMonthMMCO2e <- sixMonthMMCH4 %>%
@@ -3705,6 +3709,8 @@ rm(DEinside, DEoutside)
 #### 7 - part7fertiliserUse ####
 if(part7fertiliserUse){
   
+  # stop("fertiliser time")
+  
   # set input location - for land cover
   currPath <- file.path("./data_in", "land_cover")
   # for crops
@@ -3971,7 +3977,8 @@ if(part7fertiliserUse){
   
   # merge with crop data
   cropSoilRain <- rootDepthUK %>%
-    merge(., cropSoils %>% st_drop_geometry() %>% dplyr::select(rcFid_1km:improved_grass_ha, X, Y)
+    merge(., cropSoils %>% st_drop_geometry() %>% dplyr::select(rcFid_1km, X, Y
+                                                                , ends_with("_ha"))
           , by = c("X", "Y"), all = T) %>%
     filter(!is.na(rcFid_1km)) %>%
     filter(!is.na(soilTyp))
@@ -4080,6 +4087,8 @@ if(part7fertiliserUse){
              , sns_osr, rapeseed_ha
              , sns_uncropped, improved_grass_ha) 
   head(snsParasWide2)
+  # make NAs 0 
+  snsParasWide2[is.na(snsParasWide2)] <- 0
   
   # use matrix calculations - just areas
   snsMat1 <- snsParasWide2 %>%
@@ -4220,6 +4229,14 @@ if(part7fertiliserUse){
     merge(cropSoilRain %>% dplyr::select(X, Y, rcFid_1km), .)
   head(snsParasKgN)
   
+  # determine the amount per ha
+  snsParasKgN.aveHa <- snsParasKgN %>%
+    mutate(aveNperHa = totalNperKm / 100) %>%
+    st_drop_geometry() %>%
+    dplyr::select(aveNperHa) %>%
+    {quantile(.$aveNperHa, seq(0, 1, 0.1))}
+  snsParasKgN.aveHa
+  
   # load in manure amounts, and the N you get from it, and reduce from fertiliser cost
   kgNmanure <- st_read(file.path("results", "animals", "spatialN1km_kgN.gpkg"))
   head(kgNmanure)
@@ -4268,9 +4285,12 @@ if(part7fertiliserUse){
   # check how the data fit with national averages
   # Fertiliser usage on farms: Results from the Farm Business Survey,
   # England 2019/20 state that 109 is the average kg N ha-1
+  range(snsParasKgNman$finalkgNfert / 100, na.rm = T)
+  mean(snsParasKgNman$finalkgNfert / 100, na.rm = T)
+  median(snsParasKgNman$finalkgNfert / 100, na.rm = T)
   
   #### 7c - determine emissions factors for fertiliser use ####
-  rm(list=setdiff(ls(), c("CropPath", "savePath", "snsParasKgNman", "cropSoilRain", "soils")))
+  rm(list=setdiff(ls(), c("CropPath", "savePath", "snsParasKgNman", "cropSoilRain", "soils", objKeep)))
   
   ## ------------ Notes --------------  ##
   ## To calculate emissions from fertilisers, several bits of information are required:
@@ -4825,7 +4845,7 @@ if(part7fertiliserUse){
     mutate(across(directN20_kgkm2:kgN2O_N_leach, ~ . * 44/28, .names = "finN2O_{.col}")) %>%
     # get final value for combination of background and direct emissions, from volatisation, and from leaching
     mutate(totalN20_kgkm2 = finN2O_directN20_kgkm2 + finN2O_N2O_kgkm_fromNO + finN2O_N2O_kgkm2_fromNH3 + finN2O_kgN2O_N_leach) %>%
-    # to get the amunt in CO2e, times by 264
+    # to get the amount in CO2e, times by 264
     mutate(totalCO2e_kgkm2 = totalN20_kgkm2 * 264)
   
   # add liming CO2e values in
@@ -5343,6 +5363,8 @@ Data:
 #### 9 - part9residue ####
 if(part9residue){
   
+  # stop("residue time")
+  
   ## ------------ Notes --------------  ##
   ## The residue amounts come from WOFOST model output for the most part
   ## (with the exception of oats and field beans)
@@ -5650,8 +5672,6 @@ if(part9residue){
                            , allResidues
                            , by = "rcFid_1km"
                            , all = T) %>%
-    # remove excess coords
-    dplyr::select(-c(x, y, x_y)) %>%
     st_drop_geometry()
   head(cropAndResidues)
   class(cropAndResidues)
@@ -5783,9 +5803,8 @@ if(part9residue){
     nContentAbove <- rAbove[[i]] * as.numeric(nContentParas[1])
     nContentBelow <- rBelow[[i]] * as.numeric(nContentParas[2])
     nContentinResid[[i]] <- nContentAbove + nContentBelow
-    
+    print(dim(nContentinResid[[i]]))
   }
-  head(nContentParas)
   
   # merge all the final residue dataframes together
   ## above
@@ -5796,6 +5815,7 @@ if(part9residue){
     bind_cols(residAmounts %>% dplyr::select(c(rcFid_1km)), .)
   # change names
   names(rAbovekgKm2) <- names(rBelowkgKm2) <- names(residAmounts)
+  head(rAbovekgKm2)
   
   # merge N content residues together
   nContentinResid <- do.call(cbind, nContentinResid[2:11]) %>% as.data.frame() %>%
@@ -6040,11 +6060,15 @@ if(part10onfarmenergy){
     ### Other cattle >2 years old
     mutate(cowabove2years = rowSums(select(., c(contains("..."))))) %>%
     dplyr::select(-c(contains("..."))) %>%
+    ### poultry
+    mutate(poultry = rowSums(select(., c(contains("poultry"))))) %>%
+    ### pigs
+    mutate(all_pigs = rowSums(select(., c(contains("pigs"))))) %>%
     ### sheep
     mutate(sheep = rowSums(select(., contains(c("ewes", "rams", "lambs"))))) %>%
     dplyr::select(-contains(c("ewes", "rams", "lambs"))) %>% # drop summed
     ### remove non-totals for sheep, and remove horses
-    dplyr::select(-c(contains(c("lambs", "rams", "ewe", "horse", "region")))) %>%
+    dplyr::select(-c(contains(c("lambs", "rams", "ewe", "total.poultry..c48.", ".pigs.", "horse", "region")))) %>%
     rename(dairy = diary)
   head(animals2)
   names(animals2)
@@ -6071,7 +6095,7 @@ if(part10onfarmenergy){
   animals3 <- setcolorder(animals2, as.character(animalGLU$animal_type))
   ## check column headers and row names match
   stopifnot(names(animals3)[1:(ncol(animals3)-1)] == animalGLU$animal_type)
-  head(animalGLU)
+  animalGLU
   
   ## use GLUs to multiply - transpose before and after to match vector
   gluRecommHect <- t(t(animals3[, c(1:(ncol(animals3)-1))]) %>%
@@ -6235,7 +6259,6 @@ Data:
     Temporal coverage: 2015
     Native projection: 27700")
   sink(file = NULL)
-  
 }
 
 #### 11 - part11combineemissions ####
@@ -6258,7 +6281,10 @@ if(part11combineemissions){
     ## get all different possible regions
     ukRegionsPossible <- unlist(unique(griddf %>% st_drop_geometry() %>%
                                          dplyr::select(region)) %>% as.vector()) %>% as.character()
-    # print(ukRegionsPossible)
+    ### ignore NAs
+    ukRegionsPossible <- ukRegionsPossible[!is.na(ukRegionsPossible)]
+    
+    print(ukRegionsPossible)
     
     x <- ukRegionsPossible[[1]]
     
@@ -6320,9 +6346,6 @@ if(part11combineemissions){
         st_drop_geometry()
       names(anr)
       
-      head(regionGrid %>%
-             dplyr::select(poultry_per_km), n = 100)
-      
       # remove horses / goats
       anr <- anr %>%
         dplyr::select(-c(contains(c("horses", "goats"))))
@@ -6380,13 +6403,16 @@ if(part11combineemissions){
   currPath <- file.path("data_in", "animals")
   resultsPath <- file.path("results")
   
-  ##### 12a - load grids - animals and land cover - with regions #####
+  ##### 11a - load grids - animals and land cover - with regions #####
   gridAnimals <- st_read(file.path(currPath, "all_animals_1km.gpkg")) %>%
-    st_drop_geometry() %>%
-    merge(ghgGridGB, .)
+    st_drop_geometry()
+  reg <- st_read(file.path(currPath, "nonBovine_grid_2020_1km.gpkg")) %>% dplyr::select(rcFid_1km, region) %>% st_drop_geometry()
+  gridAnimals <- gridAnimals %>%
+    merge(., reg) %>% # merge, to get region
+    relocate(rcFid_1km, region)
   head(gridAnimals)
   
-  # convert non-england regions to 'other'
+  # convert non-england regions to 'other' - to match original cow regions
   gridAnimals$region <- ifelse(gridAnimals$region %in% 
                                  c("Highlands and Islands", "Mid and West Wales"
                                    , "West Scotland", "South Scotland", "North Wales"
@@ -6413,7 +6439,7 @@ if(part11combineemissions){
     merge(gridAnimals %>% dplyr::select(region, rcFid_1km) %>% st_drop_geometry(), .)
   head(gridLand)
   
-  #### 12b - enteric fermentation ####
+  #### 11b - enteric fermentation ####
   # load in enteric fermentation - a per-animal emission value
   entFerm <- fread(file.path(resultsPath, "animals", "entericFermCH4CO2e.csv"))
   head(entFerm)
@@ -6433,7 +6459,7 @@ if(part11combineemissions){
   head(ghgGridResults)
   plot(ghgGridResults[1])
   
-  #### 12c - manure management ####
+  #### 11c - manure management ####
   # load in manure management - a per-animal emission value - it is a value for 6 months (indoors)
   manMgmt <- fread(file.path(resultsPath, "animals", "sixMonthMMCO2e.csv"))
   head(manMgmt)
@@ -6451,7 +6477,7 @@ if(part11combineemissions){
           , by = "rcFid_1km")
   head(ghgGridResults)
   
-  #### 12d - animal excretions ####
+  #### 11d - animal excretions ####
   # load in animal excretions - a per-animal emission value
   excrete <- fread(file.path(resultsPath, "animals", "annual_grazing_emissions.csv"))
   head(excrete)
@@ -6469,7 +6495,7 @@ if(part11combineemissions){
           , by = "rcFid_1km")
   head(ghgGridResults)
   
-  #### 12e - fertiliser use ####
+  #### 11e - fertiliser use ####
   # load in fertiliser - an amount per km2
   fertUse <- st_read(file.path(resultsPath, "arable", "fertiliser_emissions.gpkg"))
   head(fertUse)
@@ -6483,7 +6509,7 @@ if(part11combineemissions){
     replace(is.na(.), 0)
   head(ghgGridResults)
   
-  #### 12f - land use ####
+  #### 11f - land use ####
   # load in land use emissions - an amount per km2 for non-ag areas
   landUse <- st_read(file.path(resultsPath, "land_use", "land_use_emissions.gpkg")) %>%
     # get a kg co2e value
@@ -6499,7 +6525,7 @@ if(part11combineemissions){
     replace(is.na(.), 0)
   head(ghgGridResults)
   
-  #### 12g - residue management ####
+  #### 11g - residue management ####
   # load in residue management emissions - an amount per km2 
   residues <- st_read(file.path(resultsPath, "arable", "residEmisComb_kgCO2e.gpkg")) %>%
     # assume all burned
@@ -6515,7 +6541,7 @@ if(part11combineemissions){
     replace(is.na(.), 0)
   head(ghgGridResults)
   
-  #### 12h - on-farm energy ####
+  #### 11h - on-farm energy ####
   # load in on-farm energy emissions - an amount per km2 
   onFarmEnergy <- st_read(file.path(resultsPath, "land_use", "fuel_emissions.gpkg")) %>%
     rename(fuel_kgco2e = totalkgCO2e)
