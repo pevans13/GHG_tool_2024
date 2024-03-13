@@ -930,8 +930,8 @@ if(part2AnimalGrid){
     ## original 2010 AgCensus numbers. This is only for England. For Scotland and Wales, 
     ## see the next sections (2b5b, 2b5c)
     
-    ## Pigs decreased by 26% between 2010 and 2020, while sheep decreased 21%
-    ## and poultry increased by 7%
+    ## Pigs increased by 12% between 2010 and 2020, while sheep increased 5%
+    ## and poultry increased by 11%
     ## ------------ ----- --------------  ##
     
     ###### 2b5a - proportional relationship of non-bovine animals - England
@@ -957,11 +957,11 @@ if(part2AnimalGrid){
     # Note: horse does not change
     ## pigs
     nonBov1kmGB.prop2 <- nonBov1kmGB2 %>%
-      mutate(across(contains("pigs"), ~.*0.74)
+      mutate(across(contains("pigs"), ~.*1.12)
              ## sheep
-             , across(contains(c("ewe", "sheep", "rams")), ~.*0.79)
+             , across(contains(c("ewe", "sheep", "rams")), ~.*1.05)
              ## sheep
-             , across(contains("poultry"), ~.*1.07))
+             , across(contains("poultry"), ~.*1.11))
     head(nonBov1kmGB.prop2)
     
     st_write(nonBov1kmGB.prop2, file.path(currPath, "nonBovine_grid_2020_1km.gpkg"), append = F)
@@ -2563,6 +2563,78 @@ if(part4Enteric){
           'freedom' = either 'housed' (indoors), 'sml' (is able to roam a small field), or 'lrg' (being able to roam a large, hilly field) 
           'DE' = 65 - 85
       'kgCO2.50pcScen' = the final amount of per-animal enteric fermentation emissions, in kg CO2e, based on a scenario in which the animals were housed 50% of the time and fed a 85% digestible energy diet, and could roam and graze 50% of the time, with a 80% DE diet
+    
+  Data: per-animal enteric fermentation emissions, in kg CO2e or kg cH4
+  units: kg CO2e or kg cH4 per year")
+  sink(file = NULL)
+  
+  ##### 4b - CH4 based on UK-specific equation #####
+  # stop("uk time")
+  ## ------------ Notes --------------  ##
+  ## the calculations below follow the methodology of Brown et al. (2021), where
+  ## bovine, and ovine CH4 were calculated using equations based on dry matter intake,
+  ## whereas other animals (i.e., pigs) used a Tier 1 approach from IPCC
+  ## ------------ ----- --------------  ##
+  
+  # load in table with Net Energy amounts per animal category
+  animAttrib <- fread(file.path(currPath, "animal_coefs_net_energy.csv")) %>%
+    as.data.frame()
+  unique(animAttrib$category)
+  
+  # units = gCH4 day-1
+  animAttribCH4 <- animAttrib %>%
+    dplyr::select(1:3, DMIkgDayBW) %>%
+    # if dairy cattle
+    mutate(ch4_g_day = ifelse(category %in% c("lactating_dairy", "pregnant", "heifer")
+                              , (15.8185 * DMIkgDayBW) + 88.6002
+                              # other cattle
+                              , ifelse(category %in% c("other_cattle", "calf")
+                                       , (17.5653 * DMIkgDayBW) + 45.8688
+                                       # sheep
+                                       , ifelse(category %in% c("ewes", "lambs", "other_sheep", "rams")
+                                                , (12.3894 * DMIkgDayBW) + 5.1595
+                                                # pigs (Tier 1)
+                                                , ifelse(category %in% c("pigs")
+                                                         , 1.5 / 365  
+                                                         # poultry (Tier 1)
+                                                         , 0)))))
+  head(animAttribCH4)
+  
+  # get annual values, in kg
+  animAttribCH4Year <- animAttribCH4 %>%
+    mutate(ch4_kg_year = (ch4_g_day * 365)/1000) %>%
+    # convert to co2e
+    mutate(co2e_kg_year = ch4_kg_year * 27.2)
+  head(animAttribCH4Year)
+  
+  # compare with the longer method
+  ch4Comp <- merge(animAttribCH4Year
+                   , CH4EntFerm %>% dplyr::select(1:3, kgCO2.50pcScen))
+  head(ch4Comp)
+  
+  # save final per-animal amount of CH4 and CO2e enteric fermentation
+  fwrite(animAttribCH4Year
+         , file.path(savePath, "entericFerm_uk_CH4CO2e.csv")
+         , row.names = F)
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path(savePath, "readme_entericFerm_uk_CH4CO2e.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+  Date created: 2023-02-13
+  Last update:",  format(Sys.Date()), "
+
+  Files:
+    entericFerm_uk_CH4CO2e.csv
+  
+  Columns of entericFerm_uk_CH4CO2e.csv:
+      'animal' = the category an animal was assigned to, based on either CTS or AgCensus data
+      'category' = the category each animal type was assigned to in this work
+      'UK.Region' = different regions of the UK, with 'other' representing non-English regions
+      'DMIkgDayBW' = the amount of dry matter intake (DMI) an animal requires in kg per day, based on the weight of a typical animal in this category and region combination
+      'ch4_g_day' = CH4 emissions per day, in g, per animal type, based on DMI, calculated using Brown's equations, and multiplied from ch4_g_day
+      'ch4_kg_year' = CH4 emissions per year, in kg, per animal type, based on DMI, and calculated using Brown's (2021) equations
+      'co2e_kg_year' = the final amount of per-animal enteric fermentation emissions, in kg CO2e, based on Brown (2021) equations
     
   Data: per-animal enteric fermentation emissions, in kg CO2e or kg cH4
   units: kg CO2e or kg cH4 per year")
@@ -6631,6 +6703,100 @@ if(part11combineemissions){
   dev.off()
   
   png("images/ghg_balance2.png"
+      , res = 200
+      , width = 900, height = 1200)
+  print(gg)
+  dev.off()
+  
+  #### 12m - replace entFerm emissions with UK-specific equations
+  # load in enteric fermentation - a per-animal emission value (uk-specific equation)
+  entFermUK <- fread(file.path(resultsPath, "animals", "entericFerm_uk_CH4CO2e.csv"))
+  head(entFermUK)
+  
+  # run through the transposing multiplication function
+  totalEntFermUK <- regionsTranspose(griddf = gridAnimals
+                                     , rSel = entFermUK
+                                     , finalCol = "kgCO2e_uk_entferm"
+                                     , colofInterest = "co2e_kg_year")
+  head(totalEntFermUK)
+  class(totalEntFermUK)
+  
+  head(ghgGridResultsSum)
+  ghgGridResultsSum.uk <- ghgGridResultsSum %>%
+    dplyr::select(-c(kgCO2e_entferm, total_kgco2e: total_Tco2e_inv)) %>%
+    # add uk Enteric fermentation in
+    merge(totalEntFermUK %>%
+            dplyr::select(rcFid_1km, kgCO2e_uk_entferm))
+  head(ghgGridResultsSum.uk)
+  ## total calculation
+  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+    mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_manMgmt:kgCO2e_uk_entferm)))) %>%
+    # convert to tonnes
+    mutate(total_Tco2e = total_kgco2e / 1000) 
+  head(ghgGridResultsSum.uk)
+  str(ghgGridResultsSum.uk)
+  max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T)
+  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+    merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
+  head(ghgGridResultsSum.uk)
+  str(ghgGridResultsSum.uk)
+  
+  ### create the inverse
+  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+    mutate(total_Tco2e_inv = total_Tco2e * -1) %>%
+    relocate(rcFid_1km:total_Tco2e, total_Tco2e_inv)
+  head(ghgGridResultsSum.uk)
+  str(ghgGridResultsSum.uk)
+  
+  ### write
+  st_write(ghgGridResultsSum.uk, file.path(resultsPath, "ghg_emissions_CO2e_uk.gpkg"), append = F)
+  fwrite(st_drop_geometry(ghgGridResultsSpat)
+         , file.path(resultsPath, "ghg_emissions_CO2e_uk.csv")
+         , row.names = F)
+  
+  which(ghgGridResultsSum.uk$total_Tco2e == max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T))
+  ghgGridResultsSum.uk[197730, ]
+  
+  # make spatial (raster data)
+  vpRast <- st_rasterize(ghgGridResultsSum.uk %>% dplyr::select(total_Tco2e_inv, geometry))
+  plot(vpRast)
+  empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
+  vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
+  crs(vpRast) <- "epsg:27700"
+  # save raster
+  writeRaster(vpRast, file.path(resultsPath, "ghgfin_emisUK_CO2e_inv.tif"), overwrite = T)
+  
+  rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
+                           , dx = 1000, dy = 1000
+                           , crs = 27700)
+  plot(rasterDf)
+  write_stars(rasterDf,  file.path(resultsPath, "ghgfin_emisUK_CO2e.tif"))
+  
+  ### plot results
+  # set colour ramp
+  rasterDf2 <- rasterDf %>%
+    as.data.frame(xy = T)
+  head(rasterDf2)
+  
+  breaks <- c(-1000, 0, 1000, 2000)  # Define your custom breaks
+  colors <- c("#40B0A6", "white", "orange1", "#E66100")
+  
+  gg <- ggplot() +
+    geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
+    theme_void() +
+    coord_equal() +
+    scale_fill_gradientn(breaks = breaks, colours = colors
+                         , na.value="white") +
+    labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
+    theme(legend.text = element_text(size = 8))
+  
+  png("images/ghg_balance_uk.png"
+      , res = 200
+      , width = 1000, height = 1200)
+  print(gg)
+  dev.off()
+  
+  png("images/ghg_balance2_uk.png"
       , res = 200
       , width = 900, height = 1200)
   print(gg)
