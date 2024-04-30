@@ -4,11 +4,14 @@
 ##
 ## Purpose of script: run the GHG model on different scenarios of land cover.
 ##                    The land covers were derived from previously-published
-##                    values
+##                    values (Redhead et al. 2020)
 ##                    
 ## ------------ Notes --------------  ##
-## ??
-## ??
+## Reference for original scenarios: Redhead, J. W., Powney, G. D.,
+## Woodcock, B. A., & Pywell, R. F. (2020). 
+## Effects of future agricultural change scenarios on beneficial insects. 
+## Journal of Environmental Management, 265, 110550.
+## https://doi.org/10.1016/j.jenvman.2020.110550
 ## ------------ ----- --------------  ##
 ##
 ## Run after: total_ghg_script.R

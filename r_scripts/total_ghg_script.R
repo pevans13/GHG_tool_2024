@@ -104,10 +104,10 @@ part1LandCoverGrid <- F
 part2AnimalGrid <- F
 
 # part 3 creates attribute tables for each type of animal
-part3AnimalAttributes <- F
+part3AnimalAttributes <- T
 
 # part 4 calculates the CO2e values from enteric fermentation for individual animals
-part4Enteric <- F
+part4Enteric <- T
 
 # part 5 calculates the amount of manure per animal and the emissions from its management 
 part5ManureManagement <- F
@@ -136,7 +136,7 @@ part9residue <- F
 part10onfarmenergy <- F
 
 # combine all the final emissions together
-part11combineemissions <- T
+part11combineemissions <- F
 
 if(runAll){
   createGrid <- part1LandCoverGrid <- part2AnimalGrid <- T
@@ -1227,11 +1227,13 @@ if(part3AnimalAttributes){
                                              # other cattle
                                              , ifelse(grepl("bull|Bull|teer", cowNm$animal), "other_cattle"
                                                       # according to RSCPA (https://www.rspca.org.uk/adviceandwelfare/farm/dairy/farming)
-                                                      # cows are impregnated around 15 months, to around 24 months
-                                                      , ifelse(grepl("15...18|18...21|21...24|In.calf", cowNm$animal), "pregnant"
-                                                               # cows are impregnated around 15 months, to around 24 months
-                                                               , ifelse(grepl("24...27|27...30|30...33|airy", cowNm$animal), "lactating_dairy"
-                                                                        , "other_cattle"))))))
+                                                      # cows are impregnated around 15 months
+                                                      , ifelse(grepl("15...18|18...21|21...24|24...27|27...30|30...33|airy", cowNm$animal) & !grepl("_Beef", cowNm$animal), "lactating_dairy"
+                                                               , "other_cattle")))))
+  ## see all combinations
+  uc <- cowNm %>%
+    group_by(animal, category) %>%
+    reframe(n = n())
   
   # non-bovine animal names
   nonBovineNm <- animalNames[!animalNames %in% c(cowNm$animal
@@ -2083,8 +2085,7 @@ if(part3AnimalAttributes){
   ##    fat-corrected milk (FCM)
   
   ## However, when using Eqs. 10.17 and 10.18 in IPCC (2019) for calves and
-  ## growing cattle, respectively, the values of DMI per day were way too high
-  ## (20% of BW, and 170% BW(!))
+  ## growing cattle, respectively, the values of DMI per day were slightly too low
   ## Because of this, the approach for these two groups of animals were derived
   ## from the bodyweight alone. It is recommended ~2-2.5% of a cow’s body weight
   ## should be fed to them in the form of dry matter per day, so this will be
@@ -2106,42 +2107,102 @@ if(part3AnimalAttributes){
   # tidy
   rm(kgDayMilkFat, prot)
   
+  # stop("dmi calcs")
+  
+  ## ------------ Notes --------------  ##
+  ## this section shows previous examples for growing cattle and calves, based on IPCC equations
+  ## This was not used in the final methodology
+  ## It assumes a NEmf of 7.5, based on high quality diet from Table 10.8a
+  
+  NEmf <- 7.5
+  # calculate DMI for calves
+  DMIkgDay.calves <- DMIinput %>%
+    filter(category == "calf") %>%
+    dplyr::select(animal, category, Weight_Kg, UK.Region) %>%
+    mutate(DMI = Weight_Kg^0.75 * 
+             (
+               (0.0582 * NEmf - 0.00266 * NEmf^2 - 0.0869) # top line (numerator) 
+               /
+                 0.239 * NEmf # denominator
+             )
+           # determine DMI as percentage of bodyweight
+           , BWDMI = DMI / Weight_Kg
+    )
+  print(range(DMIkgDay.calves$BWDMI))
+  
+  # calculate DMI for growing cattle
+  DMIkgDay.grow <- DMIinput %>%
+    dplyr::select(animal, category, Weight_Kg, UK.Region) %>%
+    filter(category == "other_cattle") %>%
+    mutate(DMI = Weight_Kg^0.75 * 
+             (
+               (0.0582 * 7.5 - 0.00266 * 7.5^2 - 0.1128) # top line (numerator) 
+               /
+                 0.239 * 7.5 # denominator
+             )
+           # determine DMI as percentage of bodyweight
+           , BWDMI = DMI / Weight_Kg
+    )
+  print(range(DMIkgDay.grow$BWDMI))
+  ## ------------ ----- --------------  ##
+  
   ### ----- final used methodology ---- ###
-  # calculate DMI - based on specific equations
-  DMIinput$DMIkgDay <- ifelse(grepl("calf", DMIinput$category)|grepl("lamb", DMIinput$animal), DMIinput$Weight_Kg * 0.025
-                              # heifers (EQUATION 10.18A)
-                              , ifelse(DMIinput$category == "heifer", 3.184 + 0.01536 * DMIinput$Weight_Kg * 0.96
-                                       # bulls/steers (EQUATION 10.18A)
-                                       , ifelse(grepl("teer|ull", DMIinput$animal), 3.83 + 0.0143 * DMIinput$Weight_Kg * 0.96
-                                                # lactating dairy cows (EQUATION 10.18B)
-                                                , ifelse(grepl("lactating|pregn", DMIinput$category), 0.0185 * DMIinput$Weight_Kg + 0.305  * FCM
-                                                         # EQUATION 10.18
-                                                         , ifelse(grepl("other_cat|sheep|pig", DMIinput$category), DMIinput$Weight_Kg * 0.02
-                                                                  # 2.5% bodyweight assumed for poultry DMI
-                                                                  , 0.025 * DMIinput$Weight_Kg)))))
+  # calculate DMI - based on specific equations, or bodyweight for non-bovines or growing cattle
+  DMIinput$DMIkgDay <- ifelse(grepl("calf", DMIinput$category), DMIinput$Weight_Kg * 0.0275
+                              # lambs (4%)
+                              , ifelse(grepl("lamb", DMIinput$animal), DMIinput$Weight_Kg * 0.04
+                                       # rams (1.5%)
+                                       , ifelse(grepl("ram", DMIinput$animal), DMIinput$Weight_Kg * 0.015
+                                                # ewes ('dry')
+                                                , ifelse(DMIinput$animal == "breeding.ewes.intended.for.slaughter..c39.", DMIinput$Weight_Kg * 0.015
+                                                         # ewes (young)
+                                                         , ifelse(DMIinput$animal == "ewes.intended.for.first.time.breeding..c40.", DMIinput$Weight_Kg * 0.03
+                                                                  # ewes (mid)
+                                                                  , ifelse(grepl("ewe", DMIinput$animal), DMIinput$Weight_Kg * 0.0275
+                                                                           # heifers (EQUATION 10.18A)
+                                                                           , ifelse(DMIinput$category == "heifer", 3.184 + 0.01536 * DMIinput$Weight_Kg * 0.96
+                                                                                    # bulls/steers (EQUATION 10.18A)
+                                                                                    , ifelse(grepl("teer|ull", DMIinput$animal), 3.83 + 0.0143 * DMIinput$Weight_Kg * 0.96
+                                                                                             # lactating dairy cows (EQUATION 10.18B)
+                                                                                             , ifelse(grepl("lactating|pregn", DMIinput$category), 0.0185 * DMIinput$Weight_Kg + 0.305  * FCM
+                                                                                                      # EQUATION 10.18
+                                                                                                      , ifelse(grepl("other_cat|pig", DMIinput$category), DMIinput$Weight_Kg * 0.02
+                                                                                                               # 2.5% bodyweight assumed for poultry DMI
+                                                                                                               , 0.07 * DMIinput$Weight_Kg))))))))))
   # check the %s of BW
   pcWeight <- (DMIinput$DMIkgDay/DMIinput$Weight_Kg)*100
   # tidy
   rm(pcWeight)
-  
-  # calculate DMI - based on body weight percentage (for cows)
-  # use these aims: https://ahdb.org.uk/knowledge-library/calculating-dry-matter-intakes-for-rotational-grazing-of-cattle
-  DMIinput$DMIkgDayBW <- ifelse(grepl("calf", DMIinput$category), DMIinput$Weight_Kg * 0.0275
-                                # lactating dairy cows (mean of 2 and 2.5%)
-                                , ifelse(grepl("lactating|pregn", DMIinput$category), DMIinput$Weight_Kg * 0.0225
-                                         # heifers (2.5%)
-                                         , ifelse(DMIinput$category == "heifer", DMIinput$Weight_Kg * 0.025
-                                                  # beef cattle is divided by weight
-                                                  ## 300 - 600 kg (2.5% BW)
-                                                  , ifelse(grepl("other_cat", DMIinput$category) & grepl("eef", DMIinput$animal) & DMIinput$Weight_Kg >= 300, DMIinput$Weight_Kg * 0.025
-                                                           ## 100 - 200 kg (3% BW)
-                                                           , ifelse(grepl("other_cat", DMIinput$category) & grepl("eef", DMIinput$animal) & DMIinput$Weight_Kg < 300, DMIinput$Weight_Kg * 0.03
-                                                                    # other 'dry' cattle (1.5%)
-                                                                    , ifelse(grepl("other_cat", DMIinput$category), DMIinput$Weight_Kg * 0.015
-                                                                             , DMIinput$DMIkgDay))))))
-  
-  
   head(DMIinput)
+  
+  # run checks to ensure DMI is sensible
+  ## for dairy cows, it should be between 16 - 20 kg (based on Feed into Milk, 2004)
+  DMIinput %>%
+    filter(category %in% c("lactating_dairy", "pregnant")) %>%
+    dplyr::select(DMIkgDay) %>%
+    range()
+  ## for heifer
+  DMIinput %>%
+    filter(category == "heifer") %>%
+    dplyr::select(DMIkgDay) %>%
+    range()
+  ## for beef cows, 11.5 kg should be max (based on AFRC, 1993)
+  DMIinput %>%
+    filter(grepl("beef|Beef", animal)) %>%
+    dplyr::select(DMIkgDay) %>%
+    range()
+  ### cap beef DMI at 11.5
+  DMIinput$DMIkgDay <- ifelse(grepl("beef|Beef", DMIinput$animal) & DMIinput$DMIkgDay > 11.5
+                              , 11.5, DMIinput$DMIkgDay)
+  DMIinput %>%
+    filter(grepl("beef|Beef", animal)) %>%
+    dplyr::select(DMIkgDay) %>%
+    range()
+  ## get median for all categories
+  medmed <- DMIinput %>%
+    group_by(animal, category) %>%
+    reframe(median = median(DMIkgDay)
+            , max = max(DMIkgDay))
   
   # combine the two tables and save
   parametersEnergy <- merge(DMIinput
@@ -2177,7 +2238,6 @@ animal_coefs_net_energy.csv
           'Csex' = sex coefficients. 0.8 for females, 1.2 for bulls (only required for cattle)
           'EVmilk' = the energy required to produce 1 kg of milk, in MJ kg-1
           'DMIkgDay' = the amount of dry matter intake (DMI) an animal requires in kg per day, based on specific equations
-          'DMIkgDayBW' = the amount of dry matter intake (DMI) an animal requires in kg per day, based on the weight of a typical animal in this category and region combination
           'NEm' = Net energy required for maintenance, in MJ day-1 
           'NEa_[x]' = net energy for activity based on an animal’s feeding situation (x) for a typical animal in this category and region combination, with 'x' being 'housed' (housed all the time), 'flat_sml_past' (able to move across a small, flat pasture), and 'hill_lrg_past' (able to roam across a large, hilly, pasture)
           'NEg' = net energy required for growth, in MJ day-1 
@@ -2374,6 +2434,7 @@ if(part4Enteric){
   ## to 382.51 GE (MJ/day)
   ## ------------ ----- --------------  ##
   
+  # stop("testing limits")
   UpperLim <- 382.51
   lowerLim <- 263.80
   
@@ -2472,7 +2533,9 @@ if(part4Enteric){
   
   # refine to those that met the criteria earlier
   dairyCH4.crit <- dairyCH4 %>%
-    dplyr::select(contains(criteria.match)) 
+    # remove heifers
+    filter(category != "heifer") %>%
+    dplyr::select(contains(criteria.match))
   ## max min
   dairyCH4.crit$min <- do.call(pmin, dairyCH4.crit)
   dairyCH4.crit$max <- do.call(pmax, dairyCH4.crit)
@@ -2482,6 +2545,7 @@ if(part4Enteric){
   
   # for dairy cows, 125.44 kg CH4/head/year (GHGi, 2019) needs to be covered, which it is
   # for dairy heifers, 53.20 kg CH4/head/year (GHGi, 2019) needs to be covered, which it is
+  stopifnot(length(unique(dairyCH4.crit$fitCriteria)) == 1)
   
   # use the scenario described in the '0 - select animal scenario' section 
   # to give a per-animal enteric fermentation emission
@@ -2583,16 +2647,16 @@ if(part4Enteric){
   
   # units = gCH4 day-1
   animAttribCH4 <- animAttrib %>%
-    dplyr::select(1:3, DMIkgDayBW) %>%
+    dplyr::select(1:3, DMIkgDay) %>%
     # if dairy cattle
     mutate(ch4_g_day = ifelse(category %in% c("lactating_dairy", "pregnant", "heifer")
-                              , (15.8185 * DMIkgDayBW) + 88.6002
+                              , (15.8185 * DMIkgDay) + 88.6002
                               # other cattle
                               , ifelse(category %in% c("other_cattle", "calf")
-                                       , (17.5653 * DMIkgDayBW) + 45.8688
+                                       , (17.5653 * DMIkgDay) + 45.8688
                                        # sheep
                                        , ifelse(category %in% c("ewes", "lambs", "other_sheep", "rams")
-                                                , (12.3894 * DMIkgDayBW) + 5.1595
+                                                , (12.3894 * DMIkgDay) + 5.1595
                                                 # pigs (Tier 1)
                                                 , ifelse(category %in% c("pigs")
                                                          , 1.5 / 365  
@@ -2631,7 +2695,7 @@ if(part4Enteric){
       'animal' = the category an animal was assigned to, based on either CTS or AgCensus data
       'category' = the category each animal type was assigned to in this work
       'UK.Region' = different regions of the UK, with 'other' representing non-English regions
-      'DMIkgDayBW' = the amount of dry matter intake (DMI) an animal requires in kg per day, based on the weight of a typical animal in this category and region combination
+      'DMIkgDay' = the amount of dry matter intake (DMI) an animal requires in kg per day, based on the weight of a typical animal in this category and region combination
       'ch4_g_day' = CH4 emissions per day, in g, per animal type, based on DMI, calculated using Brown's equations, and multiplied from ch4_g_day
       'ch4_kg_year' = CH4 emissions per year, in kg, per animal type, based on DMI, and calculated using Brown's (2021) equations
       'co2e_kg_year' = the final amount of per-animal enteric fermentation emissions, in kg CO2e, based on Brown (2021) equations
@@ -3165,8 +3229,8 @@ if(part6excretions){
                    , all = T)
   head(GEpivot)
   GEpivot$kgNintakeDay <- ifelse(GEpivot$NinCat == "other"
-                                 # , otherNintakeDay(GEpivot$DMIkgDayBW, halfInOut/10)
-                                 , otherNintakeDay(GEpivot$DMIkgDayBW, 16.1)
+                                 # , otherNintakeDay(GEpivot$DMIkgDay, halfInOut/10)
+                                 , otherNintakeDay(GEpivot$DMIkgDay, 16.1)
                                  , GEpivot$kgNintakeDay)
   head(GEpivot)
   
@@ -6803,4 +6867,31 @@ if(part11combineemissions){
   dev.off()
 }
 
+maps <- list.files(file.path("scenario", "scen_maps")
+                   , pattern = ".gpkg"
+                   , full.names = T)
+for(i in 1:5){
+  
+  qq <- st_read(maps[[i]]) %>% 
+    st_drop_geometry()
+  names(qq)
+  qq2 <- colSums(qq[4:ncol(qq)], na.rm = T)
+  qname <- gsub(".*ps/(.+).gpkg", "\\1", maps[[i]])
+  
+  if(i == 1){
+    tq <- rbind(scen = qname
+                , qq2 %>% as.data.frame())
+  } else {
+    tq <- bind_cols(tq, rbind(scen = qname
+                              , qq2 %>% as.data.frame()))
+  }
+  
+}
 
+tqt <- t(tq) %>% as.data.frame() %>% dplyr::select(scen
+                                                   , Lowland_60...240.months_Beef.cows
+                                                   , Medium.dairy_Dairy.calves
+                                                   , fattening_pigs_piglets
+                                                   , winterwheat_ha
+                                                   , improved_grass_ha)
+fwrite(tqt, "tqt.csv", row.names = F)
