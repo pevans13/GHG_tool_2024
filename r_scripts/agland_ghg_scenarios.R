@@ -45,7 +45,7 @@ rm(list = ls())
 ## automatic install of packages if they are not installed already
 list.of.packages <- c(
   "terra", "stars", "raster"
-  , "dplyr", "sf"
+  , "dplyr", "sf", "tidyr"
   , "tictoc", "purrr"
   , "data.table"
   , "pbapply"
@@ -66,7 +66,7 @@ rm(list.of.packages, new.packages, package.i)
 
 
 #### 0 - run which parts? ####
-runScenMapCreate <- F
+runScenMapCreate <- T
 
 #### 0 - load functions ####
 # create a tranposed multiply function
@@ -238,7 +238,7 @@ if(runScenMapCreate){
     lcmDiff.change <- lcmDiff %>%
       mutate(different = ifelse(lcm2007 != lcm2015, 1, 0))
     table(lcmDiff.change$different)
-    51133/241797
+    51133/190604
     ## convert to point data
     lcmDiff.point <- lcmDiff.change %>%
       st_as_sf(coords = c("x", "y"),
@@ -255,6 +255,7 @@ if(runScenMapCreate){
       st_intersection(regions, .)
     head(lcmDiff.region)
     st_write(lcmDiff.region, "lcmDiff_region.gpkg", append = F)
+    # lcmDiff.region <- st_read("lcmDiff_region.gpkg")
     
     ## ------------ Notes --------------  ##
     ## below, the finals of all animals, crops, etc. from the data inputs
@@ -272,9 +273,7 @@ if(runScenMapCreate){
     #### combine, using rcFid_1km
     tghg.ac <- tghg.animals %>%
       merge(., tghg.crops %>% st_drop_geometry()
-            , by = "rcFid_1km") %>%
-      # remove original region
-      dplyr::select(-region)
+            , by = "rcFid_1km") 
     
     tic("extraction to centroids")
     # get centroid, in order to be able to extract finer region
@@ -292,6 +291,8 @@ if(runScenMapCreate){
     st_write(tghg.ac, "scenario/tghg_ac.gpkg", append = F)
     st_write(tghg.crops, "scenario/tghg_crops.gpkg", append = F)
     st_write(tghg.region, "scenario/tghg_region.gpkg", append = F)
+    # tghg.region <- st_read("scenario/tghg_region.gpkg")
+    # tghg.ac <- st_read("scenario/tghg_ac.gpkg")
     
     ### merge regions with animal and crop numbers
     tghg.ac2 <- tghg.ac %>% st_drop_geometry() %>%
@@ -302,6 +303,7 @@ if(runScenMapCreate){
       # remove duplicate rows
       distinct()
     st_write(tghg.ac2, "ac2.gpkg", append = T)
+    # tghg.ac2 <- st_read("ac2.gpkg")
     ### make spatial
     tghg.ac3 <- tghg.ac2 %>%
       merge(tghg.ac %>%
@@ -326,16 +328,20 @@ if(runScenMapCreate){
       dplyr::select(-c(rcFid_1km, lcm2007, different)) %>%
       st_drop_geometry() %>%
       group_by(lcm2015, Name) %>%
+      mutate(n = n()) %>%
+      relocate(lcm2015, Name, n) %>%
       summarise(across(everything(), ~mean(.)))
+    head(tghg.summarise)
+    fwrite(tghg.summarise, "scenario/tghg_summarise.csv", row.names = F)
+    tghg.summarise <- fread("scenario/tghg_summarise.csv")
+    names(tghg.summarise)
     
-    # create the 2007 dataframe based on either:
-    # averages for the region / land cover type from 2015 where the land cover has changed, or
-    # or same as 2015 if the land cover type has not changed. 
-    # For this, use the 'different' column
+    # create the 2007 dataframe based on averages for the region / land cover type
     
+    ## use county, and 2015 averages 
     df2007.changed <- tghg.ac4 %>%
       st_drop_geometry() %>%
-      filter(different == 1) %>%
+      distinct() %>%
       # keep necessary columns
       dplyr::select(c(rcFid_1km, lcm2007, Name)) %>%
       # merge with summary, to get average animals and crops (from 2015 map)
@@ -344,33 +350,16 @@ if(runScenMapCreate){
             , by.y = c("Name", "lcm2015")
             , all = T) %>%
       filter(!is.na(rcFid_1km)) %>%
-      mutate(across(everything(), ~replace_na(., 0)))
-    
-    df2007.noChange2015 <- tghg.ac4 %>%
-      st_drop_geometry() %>%
-      filter(different == 0)
-    stop("before final")
-    ## combine back to create 2007 starting dataset
-    df2007.final <- df2007.changed %>%
-      bind_rows(., df2007.noChange2015 %>% dplyr::select(-c(lcm2015, different))) %>%
-      merge(tghg.ac3 %>% dplyr::select(rcFid_1km)
-            , .)
-    names(df2007.final)
-    
-    ## convert to raster and save
-    df2007.raster <- df2007.final %>%
-      dplyr::select(lcm2007) %>%
-      st_centroid() %>%
-      st_rasterize()
+      mutate(across(everything(), ~tidyr::replace_na(., 0))) %>%
+      distinct()
+    fwrite(df2007.changed, "scenario/df2007_changed.csv", row.names = F)
+    head(df2007.changed)
+    class(df2007.changed)
     
     ### save 
-    st_write(df2007.final
+    fwrite(df2007.changed
              , file.path("scenario", "scen_maps"
-                         , "baseline2007.gpkg"), append = T)
-    write_stars(df2007.raster
-                , file.path("scenario", "scen_maps"
-                            , "baseline2007.tif")
-                , overwrite = T)
+                         , "baseline2007.csv"), row.names = F)
     
     # write readme
     sink(file = NULL)
@@ -380,21 +369,17 @@ Date created: 2024-01-30
 Last update:",  format(Sys.Date()), "
 Produced by 'agland_ghg_scenarios.R'
 
-Description of 'baseline2007.gpkg':
-  Contains the region, land cover classification, animal numbers, and land cover areas for each 1 km2. The values were derived in one of two ways:
-    1. If the land cover classification was the same in 2007 as 2015, the values were taken from the 2015 dataset (see full project)
-    2. If the land cover classification was the different in 2007 compared to 2015, the average 2015 values for that region, land cover classification combination was used.
+Description of 'baseline2007.csv':
+  Contains the region, land cover classification, animal numbers, and land cover areas for each 1 km2. The values were derived by:
+    the average 2015 values for that region (county), land cover classification combination was used.
 
-Columns of 'baseline2007.gpkg':
+Columns of 'baseline2007.csv':
   'rcFid_1km' = centroid point of 1 km reference id (EPSG: 27700) [x and y coordinates seperated by '_']
   'Name' = region of the the UK that the polygon centroid was in.  
   'lcm2007' = the dominant land cover classification that that 1 km2 polygon was assigned to in the land cover map 2007
   '[animal_name]' = how many of the animal type in each column name was found in that polygon. See main project for descriptions
   '[land_cover]_ha' = area, in hectares, of that land cover found in that 1 km2 pixel, as determined (in the original project) by using the 25 m2 land cover raster
   
-Description of 'baseline2007.tif':
-  Contains the land cover classification of each pixel. 
-
 Spatial resolution: 1 km2
 Spatial extent: GB
 Temporal coverage: 2007 (although data from animals and crops derived from 2020, and 2015, respectively)
@@ -422,51 +407,92 @@ Native projection: 27700")
     # stack them
     rast() %>%
     # create as a dataframe
-    as.data.frame(., xy = T)
+    as.data.frame(., xy = T) %>%
+    # create id
+    mutate(rcFid_1km = paste(round(x), round(y), sep = "_")) %>%
+    relocate(rcFid_1km) %>% dplyr::select(-c(x, y))
   names(scenMaps)
   ## keep only important colnames info
   names(scenMaps) <- gsub(".*riolu(.+)_af.*", "\\1", names(scenMaps))
   names(scenMaps)
+  str(scenMaps)
+  head(scenMaps)
   
-  ### determine which change from the baseline 2007 one
-  df2007 <- raster(file.path("scenario", "scen_maps"
-                             , "baseline2007.tif")) %>% 
-    as.data.frame(xy = T) %>%
-    mutate(x = round(x, 0)
-           , y = round(y, 0)) %>%
-    merge(., scenMaps %>%
-            mutate(x = round(x, 0)
-                   , y = round(y, 0))
-    ) %>%
-    filter(baseline2007 > 0)
+  ## ------------ Notes --------------  ##
+  ## for each scenario, merge with the county-averaged data from 2015 map
   
-  # 2007 polygon
-  apply(df2007.final %>% st_drop_geometry(), 2, max)
+  ## requirements: df with rcFid_1km, region
+  ## ------------ ----- --------------  ##
   
-  # see which pixels changed
-  df2007.changes <- df2007 %>%
-    mutate(across(Ag_15:Gr_30, ~ifelse(. != baseline2007, 1, 0)
-                  , .names = "{.col}_changes")) %>%
-    # make rcFid_1km, to match other dfs
-    mutate(rcFid_1km = paste(x, y, sep = "_")) %>%
-    ## use id to match up regions
-    merge(., df2007.final %>% st_drop_geometry() %>% dplyr::select(rcFid_1km, Name)) %>%
-    relocate(rcFid_1km, Name)
+  # load in summarised info
+  tghg.summarise <- fread("scenario/tghg_summarise.csv")
+  head(tghg.summarise)
+  sort(names(tghg.summarise))
   
-  # get averages of all animals and crops per region per land type
-  df2007.summarise <- df2007.final %>%
-    # remove unneeded columns for summary
-    dplyr::select(-c(rcFid_1km)) %>%
-    st_drop_geometry() %>%
-    group_by(lcm2007, Name) %>%
-    summarise(across(everything(), ~mean(.)))
+  # load in 2007 basemap
+  base2007 <- fread(file.path("scenario", "scen_maps"
+                                , "baseline2007.csv")) %>%
+    dplyr::select(Name, rcFid_1km)
+  head(base2007)
   
-  apply(df2007.summarise, 2, max)
+  for(i in 2:ncol(scenMaps)){
+    
+    # isolate column for current scenario
+    curr.scen <- scenMaps %>%
+      dplyr::select(rcFid_1km, all_of(i)) %>%
+      # add 'Name' (county name) via merge
+      merge(., base2007)
+    ## get scen
+    cs <- names(curr.scen)[2]
+    ## relpace with generic name
+    names(curr.scen)[2] <- "lcm"
+    names(curr.scen)
+    
+    cat("working on ...", cs, "...\n")
+    
+    ## merge with summary data from 2015
+    curr.merge <- curr.scen %>%
+      merge(., tghg.summarise
+            , by.x = c("Name", "lcm")
+            , by.y = c("Name", "lcm2015")) %>%
+      # get x and y
+      separate(rcFid_1km, c("x", "y"), sep = "_", remove = F) %>%
+      # create as points
+      st_as_sf(coords = c("x", "y")
+               , crs = st_crs(27700))
+    head(curr.merge)
+    st_crs(curr.merge)
+    
+    # save
+    ## as vector (point)
+    cat("saving ...", cs, "...\n")
+    st_write(curr.merge, file.path("scenario", "scen_maps"
+                                   , paste0(cs, ".gpkg")), append = F)
+    
+    ## as raster
+    curr.rast <- curr.merge %>%
+      dplyr::select(lcm) %>%
+      st_rasterize(dx = 1000, dy = 1000)
+    curr.rast
+    write_stars(curr.rast, file.path("scenario", "scen_maps"
+                                   , paste0(cs, ".tif")))
+  }
+
+  # list all the output scenario rasters
+  dfs2007 <- list.files(file.path("scenario", "scen_maps")
+                        , pattern = ".tif$"
+                        , full.names = T)
+  cat(dfs2007, sep = "\n")
+  stopifnot(length(dfs2007) == 4)
   
   # for each scenario, determine which pixels are different and the same, 
   # and repeat the methodology in section 1 to get full dataset
-  for(i in names(df2007)[4:7]){
+  for(i in dfs2007){
     print(i)
+    
+    i.rast <- rast(i)
+    
+    table(i.rast %>% as.data.frame()) %>% t()
     
     # use 'i' to extract columns for scenario
     df2007.scen <- df2007.changes %>%
