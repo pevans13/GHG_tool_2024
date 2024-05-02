@@ -355,11 +355,22 @@ if(runScenMapCreate){
     fwrite(df2007.changed, "scenario/df2007_changed.csv", row.names = F)
     head(df2007.changed)
     class(df2007.changed)
+    # make spatial 
+    df2007.spat <- df2007.changed %>%
+      # get x and y
+      separate(rcFid_1km, c("x", "y"), sep = "_", remove = F) %>%
+      # create as points
+      st_as_sf(coords = c("x", "y")
+               , crs = st_crs(27700))
     
     ### save 
     fwrite(df2007.changed
+           , file.path("scenario", "scen_maps"
+                       , "baseline2007.csv"), row.names = F)
+    ### save as spatial
+    st_write(df2007.spat
              , file.path("scenario", "scen_maps"
-                         , "baseline2007.csv"), row.names = F)
+                         , "baseline2007.gpkg"), append = F)
     
     # write readme
     sink(file = NULL)
@@ -431,7 +442,7 @@ Native projection: 27700")
   
   # load in 2007 basemap
   base2007 <- fread(file.path("scenario", "scen_maps"
-                                , "baseline2007.csv")) %>%
+                              , "baseline2007.csv")) %>%
     dplyr::select(Name, rcFid_1km)
   head(base2007)
   
@@ -475,9 +486,9 @@ Native projection: 27700")
       st_rasterize(dx = 1000, dy = 1000)
     curr.rast
     write_stars(curr.rast, file.path("scenario", "scen_maps"
-                                   , paste0(cs, ".tif")))
+                                     , paste0(cs, ".tif")))
   }
-
+  
   # list all the output scenario rasters
   dfs2007 <- list.files(file.path("scenario", "scen_maps")
                         , pattern = ".tif$"
@@ -485,51 +496,76 @@ Native projection: 27700")
   cat(dfs2007, sep = "\n")
   stopifnot(length(dfs2007) == 4)
   
-  # for each scenario, determine which pixels are different and the same, 
-  # and repeat the methodology in section 1 to get full dataset
+  # for each scenario, determine which pixels are different and the same
   for(i in dfs2007){
     print(i)
     
     i.rast <- rast(i)
     
-    table(i.rast %>% as.data.frame()) %>% t()
-    
-    # use 'i' to extract columns for scenario
-    df2007.scen <- df2007.changes %>%
-      dplyr::select(c(rcFid_1km:baseline2007
-                      , contains(i))) %>%
-      rename(lc = 6, change = 7)
-    
-    table(df2007.scen$change, useNA = "always")
-    
-    # keep those that are the same
-    df2007.noChange <- df2007.scen %>%
-      filter(change == 0) %>% dplyr::select(rcFid_1km)
-    ## extract those values from the 2007 map
-    df2007.noChange <- df2007.final %>%
-      filter(rcFid_1km %in% df2007.noChange$rcFid_1km)
-    
-    # change the other to 2007 averages for region and land cover classification
-    df2007.aver <- df2007.scen %>%
-      filter(change == 1) %>%
-      dplyr::select(rcFid_1km, Name, lc) %>%
-      # merge with averages
-      merge(., df2007.summarise %>% ungroup() %>% rename(lc = lcm2007)
-            , all = T) %>%
-      dplyr::select(-lc)
-    
-    # bind back together
-    df2007Scen.bound <- df2007.noChange %>%
-      bind_rows(., df2007.aver)
-    # stopifnot(identical(nrow(df2007Scen.bound), nrow(df2007.changes)))
-    cat(df2007.changes$rcFid_1km[which(!df2007.changes$rcFid_1km %in% df2007Scen.bound$rcFid_1km)]
-        , "\n")
-    
-    ### save 
-    st_write(df2007Scen.bound
-             , file.path("scenario", "scen_maps"
-                         , paste0(i, ".gpkg")), append = T)
+    cat(table(i.rast %>% as.data.frame()), "\n")
   }
+  
+  # list all the output scenario vectors
+  dfs2007 <- list.files(file.path("scenario", "scen_maps")
+                        , pattern = ".gpkg$"
+                        , full.names = T)
+  cat(dfs2007, sep = "\n")
+  stopifnot(length(dfs2007) == 5)
+  
+  # for each scenario, determine totals of a few variables (animals and land cover)
+  dfs2007.amounts <- pblapply(dfs2007, function(i){
+  
+    print(i)
+    
+    # get name
+    i.name <- gsub("^(.+)\\.gp.*", "\\1", basename(i))
+    
+    i.vect <- st_read(i, quiet = T)
+    i.apply <- apply(i.vect %>% as.data.frame() %>%
+                       dplyr::select(5:(last_col()-1)) %>%
+                       mutate_all(~ ifelse(is.na(.), 0, .))
+                       , 2, mean) %>%
+      as.data.frame() 
+    i.apply <- tibble::rownames_to_column(i.apply, "Name")
+    names(i.apply)[2] <- i.name
+    return(i.apply)
+  }) %>% purrr::reduce(left_join, by = "Name")
+  sort(dfs2007.amounts$Name)
+
+  # select only a few rows for illustration
+  dfs2007.select <- dfs2007.amounts %>%
+    filter(Name %in% c("Medium.dairy_Dairy.cows", "poultry_per_km", "Continental_60...240.months_Beef.cows"
+                       , "conifer_ha", "broadleaf_ha", "calc_grass_ha"
+                       , "improved_grass_ha", "winterwheat_ha")) %>%
+    relocate(Name, Ag_30)
+  
+  # keep those that are the same
+  df2007.noChange <- df2007.scen %>%
+    filter(change == 0) %>% dplyr::select(rcFid_1km)
+  ## extract those values from the 2007 map
+  df2007.noChange <- df2007.final %>%
+    filter(rcFid_1km %in% df2007.noChange$rcFid_1km)
+  
+  # change the other to 2007 averages for region and land cover classification
+  df2007.aver <- df2007.scen %>%
+    filter(change == 1) %>%
+    dplyr::select(rcFid_1km, Name, lc) %>%
+    # merge with averages
+    merge(., df2007.summarise %>% ungroup() %>% rename(lc = lcm2007)
+          , all = T) %>%
+    dplyr::select(-lc)
+  
+  # bind back together
+  df2007Scen.bound <- df2007.noChange %>%
+    bind_rows(., df2007.aver)
+  # stopifnot(identical(nrow(df2007Scen.bound), nrow(df2007.changes)))
+  cat(df2007.changes$rcFid_1km[which(!df2007.changes$rcFid_1km %in% df2007Scen.bound$rcFid_1km)]
+      , "\n")
+  
+  ### save 
+  st_write(df2007Scen.bound
+           , file.path("scenario", "scen_maps"
+                       , paste0(i, ".gpkg")), append = T)
   
   # write readme
   sink(file = NULL)
