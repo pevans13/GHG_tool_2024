@@ -3,7 +3,7 @@
 ## Script name: total_ghg_script.R
 ##
 ## Purpose of script: to combine all of the different elements of greenhouse gas
-##                    emissions calculation into one script##                    
+##                    emissions calculation into one script                   
 ##                    
 ## Run after: ghgtool_setup.R
 ##            nonBovines.R
@@ -104,10 +104,10 @@ part1LandCoverGrid <- F
 part2AnimalGrid <- F
 
 # part 3 creates attribute tables for each type of animal
-part3AnimalAttributes <- T
+part3AnimalAttributes <- F
 
 # part 4 calculates the CO2e values from enteric fermentation for individual animals
-part4Enteric <- T
+part4Enteric <- F
 
 # part 5 calculates the amount of manure per animal and the emissions from its management 
 part5ManureManagement <- F
@@ -161,6 +161,31 @@ DEinside <- 83 # 'housed' value
 DEoutside <- 79 # outside value
 inDE <- paste0("housed_", DEinside)
 outDE <- paste0("sml_", DEoutside)
+
+#### 0 - run which scenarios? ####
+## ------------ Notes --------------  ##
+## In this section, the user should select which scenarios to run by providing
+## paths to the polygons that contain the relevant information on animal
+## numbers and land cover composition. 
+## Note: for this example, scenarios were produced as part of the 'agland_ghg_scenarios.R'
+## script, focusing on expansion of arable or grassland
+## Note also: the first three sections of this script focus on creating the initial
+## 2015 data map. Any further scenarios introduced in this section will be considered 
+## from part 4 onwards
+## ------------ ----- --------------  ##
+scenPath <- file.path("scenario", "scen_maps")
+scenarios <- c(
+  # write paths here (with a comma at the start, with the exception of path 1)
+  file.path(scenPath, "Ag_15.gpkg") # path 1
+  , file.path(scenPath, "Ag_30.gpkg") # path 2
+  , file.path(scenPath, "baseline2007.gpkg") # path 3
+  , file.path(scenPath, "Gr_15.gpkg") # path 4
+  , file.path(scenPath, "Gr_30.gpkg") # path 5
+)
+
+# if you need to separate them into animals and land cover, put 'T' below
+sepAnimalsLand <- T
+# if the above is 'T', this is carried out between parts2 and 3
 
 #### 0 - load the GB grid ####
 ## ------------ Notes --------------  ##
@@ -881,7 +906,7 @@ if(part2AnimalGrid){
     # load in regions for Wales and Scotland
     regions.WS <- st_read("N:/Data/UK/Boundary/data/bdline_gb.gpkg"
                           , layer='scotland_and_wales_region')
-    plot(regions.WS)
+    plot(regions.WS[1])
     # combine
     regions.UK <- bind_rows(regions, regions.WS) %>%
       mutate(fid = 1:n()) %>% relocate(fid) %>%
@@ -1193,6 +1218,60 @@ if(part2AnimalGrid){
      , animalsFinal, cowsGrid, goodPoints)
   
 } # end of 'part2AnimalGrid'
+
+if(sepAnimalsLand){
+  
+  # load in created animal and land cover grids
+  # set location of files that relate to animal data
+  currPath <- file.path("./data_in", "animals")
+  # load in animal numbers
+  animalNumbers <- st_read(file.path(currPath, "all_animals_1km.gpkg"))
+  names(animalNumbers)
+  
+  # set location of files that relate to animal data
+  currPath <- file.path("./data_in", "land_cover")
+  # load in animal numbers
+  landArea <- st_read(file.path(currPath, "land_cover_table.gpkg"))
+  names(landArea)
+  
+  # combine the names, for the purposes of selecting those from the scenario data
+  keepNames <- c(names(animalNumbers), names(landArea))
+  
+  # create saving directory for separate land and animal aspects
+  dir.create(file.path(scenPath, "finer_detail"), showWarnings = F)
+  
+  for(i in 1:length(scenarios)){
+    
+    cat("i =", i, scenarios[[i]], "\n")
+    
+    # load in full dataset
+    fulldf.in <- st_read(scenarios[[i]], quiet = T) %>%
+      # keep only the columns with the names from the original data
+      dplyr::select(all_of(keepNames))
+    
+    names(fulldf.in)[which(!names(fulldf.in) %in% keepNames)]
+    names(fulldf.in)
+    
+    # split into land area and animals separately keeping ID
+    ## land
+    fulldf.land <- fulldf.in %>%
+      dplyr::select(rcFid_1km, contains("_ha")) %>%
+      replace(is.na(.), 0)
+    ## animals
+    fulldf.animals <- fulldf.in %>%
+      dplyr::select(-c(contains("_ha"))) %>%
+      replace(is.na(.), 0)
+    
+    ### save those as separate
+    cat("saving ...", basename(gsub(".gpkg", paste0("_land.gpkg"),  scenarios[[i]])), "...\n")
+    st_write(fulldf.land, file.path(scenPath, "finer_detail"
+                                    , basename(gsub(".gpkg", paste0("_land.gpkg"),  scenarios[[i]])))
+             , append = F)
+    st_write(fulldf.animals, file.path(scenPath, "finer_detail"
+                                       , basename(gsub(".gpkg", paste0("_animal.gpkg"),  scenarios[[i]])))
+             , append = F)
+  }
+}
 
 #### 3 - part3AnimalAttributes ####
 if(part3AnimalAttributes){
@@ -3632,6 +3711,8 @@ if(part6excretions){
   # type are in a 1 km2 cell, and then multiplying by the amount of housed 
   # excreta N each animal produces
   
+  # stop("before animal grid loading in part 6")
+  
   # load the animal grid, which is at the 1 km2
   animalGrid <- st_read(file.path(currPath, "all_animals_1km.gpkg"))
   head(animalGrid)
@@ -3836,6 +3917,20 @@ if(part6excretions){
   Native projection: 27700")
   
   sink(file = NULL)
+  
+  ##### 6d - SCENARIOS - calculate the amount of N in manure #####
+  
+  # load in all the animal grids for the scenarios
+  for(i in 1:length(scenarios)){
+    # load in full dataset
+    fulldf.in <- st_read(scenarios[[i]])
+    
+    
+  }
+  
+  animalGrid <- st_read(file.path(currPath, "all_animals_1km.gpkg"))
+  head(animalGrid)
+  
   
 } # end 'part6excretions'
 
@@ -6167,7 +6262,7 @@ if(part10onfarmenergy){
   ## in a km2, and the recommended stocking rate from Nix (2021)
   ## ------------ ----- --------------  ##
   
-  # read in anmial numbers
+  # read in animal numbers
   animals <- st_read("data_in/animals/all_animals_1km.gpkg")
   head(animals)
   names(animals)

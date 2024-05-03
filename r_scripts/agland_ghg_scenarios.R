@@ -266,6 +266,7 @@ if(runScenMapCreate){
     
     ### load animals
     tghg.animals <- st_read("data_in/animals/all_animals_1km.gpkg")
+    sort(names(tghg.animals))
     t(table(tghg.animals$rcFid_1km)) %>% as.data.frame() %>%
       filter(Freq > 1)
     ### load crops (and all land covers)
@@ -285,6 +286,7 @@ if(runScenMapCreate){
       st_intersection(regions, .)
     toc()
     head(tghg.region)
+    sort(names(tghg.region))
     
     # save them all
     st_write(tghg.animals, "scenario/tghg_animals.gpkg", append = F)
@@ -302,7 +304,7 @@ if(runScenMapCreate){
       relocate(rcFid_1km, Name, Area_Description) %>%
       # remove duplicate rows
       distinct()
-    st_write(tghg.ac2, "ac2.gpkg", append = T)
+    # st_write(tghg.ac2, "ac2.gpkg", append = T)
     # tghg.ac2 <- st_read("ac2.gpkg")
     ### make spatial
     tghg.ac3 <- tghg.ac2 %>%
@@ -310,6 +312,7 @@ if(runScenMapCreate){
               dplyr::select(rcFid_1km), .
             , by = "rcFid_1km")
     names(tghg.ac3)
+    st_write(tghg.ac3, "ac3.gpkg", append = T)
     
     # merge with the ones that are the same between 2007 and 2015 and those that are not
     tic("extraction to centroids - region and change")
@@ -539,34 +542,6 @@ Native projection: 27700")
                        , "improved_grass_ha", "winterwheat_ha")) %>%
     relocate(Name, Ag_30)
   
-  # keep those that are the same
-  df2007.noChange <- df2007.scen %>%
-    filter(change == 0) %>% dplyr::select(rcFid_1km)
-  ## extract those values from the 2007 map
-  df2007.noChange <- df2007.final %>%
-    filter(rcFid_1km %in% df2007.noChange$rcFid_1km)
-  
-  # change the other to 2007 averages for region and land cover classification
-  df2007.aver <- df2007.scen %>%
-    filter(change == 1) %>%
-    dplyr::select(rcFid_1km, Name, lc) %>%
-    # merge with averages
-    merge(., df2007.summarise %>% ungroup() %>% rename(lc = lcm2007)
-          , all = T) %>%
-    dplyr::select(-lc)
-  
-  # bind back together
-  df2007Scen.bound <- df2007.noChange %>%
-    bind_rows(., df2007.aver)
-  # stopifnot(identical(nrow(df2007Scen.bound), nrow(df2007.changes)))
-  cat(df2007.changes$rcFid_1km[which(!df2007.changes$rcFid_1km %in% df2007Scen.bound$rcFid_1km)]
-      , "\n")
-  
-  ### save 
-  st_write(df2007Scen.bound
-           , file.path("scenario", "scen_maps"
-                       , paste0(i, ".gpkg")), append = T)
-  
   # write readme
   sink(file = NULL)
   sink(file = file.path("scenario", "scen_maps", "readme_scenarios.md"))
@@ -576,10 +551,9 @@ Last update:",  format(Sys.Date()), "
 Produced by 'agland_ghg_scenarios.R'
 
 Description of scenario maps:
-  Contains the region, land cover classification, animal numbers, and land cover areas for each 1 km2. The values were derived in one of two ways:
-    1. If the land cover classification was the same as the 2007 baseline, the values were taken from the 2007 dataset (see full project)
-    2. If the land cover classification was the different to the 2007 baseline, the average 2007 values for that region, land cover classification combination was used.
-
+  Contains the region, land cover classification, animal numbers, and land cover areas for each 1 km2. The values were derived by:
+    the average 2015 values for that region (county), land cover classification combination was used.
+    
 Naming of scenario maps:
   Naming follows '[scenario].gpkg', where:
     'scenario' defines the scenario '[ex]_[%]', which consists of what is being expanded (ex) and the per cent (%) amount.
