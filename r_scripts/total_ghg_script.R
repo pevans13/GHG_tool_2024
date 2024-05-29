@@ -122,7 +122,7 @@ part6excretions <- F
 ## 2. determine rainfall, crop type, and Soil Nitrogen Supply (SNS)
 ## 3. determine N use per km2 - derived from individual crops
 ## 4. calculate emissions based purely on assumed fertiliser
-part7fertiliserUse <- F
+part7fertiliserUse <- T
 
 # part 8 determines the emission and sequestration values based on non-agricultural land use
 part8landuse <- F
@@ -184,8 +184,14 @@ scenarios <- c(
 )
 
 # if you need to separate them into animals and land cover, put 'T' below
-sepAnimalsLand <- T
+sepAnimalsLand <- F
 # if the above is 'T', this is carried out between parts2 and 3
+
+# load regions of England
+st_read("N:/Data/UK/Boundary/region/RGN_DEC_2021_EN_BUC.shp") %>%
+  # save locally as gpkg
+  st_write("data_in/RGN_DEC_2021_EN_BUC.gpkg", append=F)
+regions <- st_read("data_in/RGN_DEC_2021_EN_BUC.gpkg")
 
 #### 0 - load the GB grid ####
 ## ------------ Notes --------------  ##
@@ -2606,7 +2612,8 @@ if(part4Enteric){
     } ) %>%
     ungroup %>%
     rowwise() %>%
-    mutate(fitCriteria = if_else(Min <= 125.44 & Max >= 125.44, "Yes"
+    mutate(fitCriteria = if_else(Min <= 125.44 & Max >= 125.44
+                                 , "Yes"
                                  , "NO"))
   head(dairyCH4)
   
@@ -2619,7 +2626,8 @@ if(part4Enteric){
   dairyCH4.crit$min <- do.call(pmin, dairyCH4.crit)
   dairyCH4.crit$max <- do.call(pmax, dairyCH4.crit)
   dairyCH4.crit <- dairyCH4.crit %>%
-    mutate(fitCriteria = if_else(min <= 125.44 & max >= 125.44, "Yes"
+    mutate(fitCriteria = if_else(min <= 125.44 & max >= 125.44
+                                 , "Yes"
                                  , "NO"))
   
   # for dairy cows, 125.44 kg CH4/head/year (GHGi, 2019) needs to be covered, which it is
@@ -3920,18 +3928,209 @@ if(part6excretions){
   
   ##### 6d - SCENARIOS - calculate the amount of N in manure #####
   
+  cat(scenarios, sep = "\n")
+  stop("before N scenarios")
+  
+  # create scenario save path
+  scenarioResultsPath <- file.path("scenario", "results")
+  
   # load in all the animal grids for the scenarios
   for(i in 1:length(scenarios)){
+    tic("scenario run")
+    scenName <- gsub(".gpkg", "", basename(scenarios[[i]]))
+    cat(paste0("starting N excretion for ... ", scenName, "[", i, "] ..."), "\n")
     # load in full dataset
     fulldf.in <- st_read(scenarios[[i]])
+    head(fulldf.in)
+    # use original regions (i.e., not county)
+    head(reg)
+    cat(unique(reg$region), sep = "\n")
     
+    ## combine them
+    fulldf.in <- fulldf.in %>%
+      merge(., reg, by = "rcFid_1km")
+    sort(names(fulldf.in))
     
+    ### make long
+    fulldfLong <- fulldf.in %>%
+      # only keep the animals
+      dplyr::select(-any_of(c("Name", "lcm", "n"
+                       , contains("_ha")))) %>%
+      st_drop_geometry() %>%
+      pivot_longer(!c(rcFid_1km, region))
+    head(fulldfLong)
+    
+    tic("merging excrete N")
+    # merge with the excreted N df, ensuring regions match
+    fulldf.ExcreteN <- fulldfLong %>% as.data.frame() %>%
+      filter(region == "East of England") %>%
+      merge(., excreteNcombined %>% 
+              dplyr::select(animal:UK.Region, kgNExcreteYr_housed) %>%
+              filter(UK.Region %in% c("East_of_England", "All"))
+            , by.x = c("name"
+                       # , "region"
+            )
+            , by.y = c("animal"
+                       # , "UK.Region"
+            )
+            , all = T)
+    head(fulldf.ExcreteN)
+    toc()
+    
+    table(fulldf.ExcreteN$region)
+    table(fulldf.ExcreteN$UK.Region)
+    
+    # multiply N excreted by value (number of animals in that km2)
+    fulldf.ExcreteN2 <- fulldf.ExcreteN %>%
+      mutate(totalN = value * kgNExcreteYr_housed)
+    head(fulldf.ExcreteN2)
+    # sum by pixel
+    fulldf.sumExcreteN <- fulldf.ExcreteN2 %>%
+      group_by(rcFid_1km) %>%
+      summarise(total1km_kgN = sum(totalN, na.rm = T))
+    head(fulldf.sumExcreteN)
+    
+    ###### second matrix multiplication method - SCENARIOS ######
+    cat(paste0("starting [exercise 2] for N excretion for ... ", scenName, " ..."), "\n")
+    
+    # only keep animals
+    fulldf.onlyAnimals <- fulldf.in %>%
+      # only keep the animals
+      dplyr::select(-any_of(c("Name", "lcm", "n", "lcm2007"))) %>%
+      dplyr::select(-contains("_ha"))
+    
+    # add underscores to regions, to make them match output df
+    fulldf.onlyAnimals$region <- gsub(" ", "_", fulldf.onlyAnimals$region)
+    head(fulldf.onlyAnimals$region)
+    # and make London the same as South East
+    fulldf.onlyAnimals$region <- ifelse(fulldf.onlyAnimals$region == "London", "South_East"
+                                , fulldf.onlyAnimals$region)
+    # convert the humber, to match excrete N df
+    fulldf.onlyAnimals$region <- ifelse(fulldf.onlyAnimals$region == "Yorkshire_and_The_Humber"
+                                , "Yorkshire_and_the_Humber"
+                                , fulldf.onlyAnimals$region)
+    unique(excreteNcombined$UK.Region)
+    unique(fulldf.onlyAnimals$region)
+    ## get all different possible regions
+    ukRegionsPossible <- unique(fulldf.onlyAnimals$region)
+    ukRegionsPossible <- na.omit(ukRegionsPossible)
+    
+    x <- "Highlands_and_Islands"
+    ### run it through a function, extracting one region at a time
+    regionsNitrogen <- pblapply(ukRegionsPossible, function(x){
+      
+      # get current region
+      cat(x)
+      currRegion <- ifelse(x %in% c("Highlands_and_Islands", "Mid_and_West_Wales"
+                                    , "West_Scotland", "South_Scotland", "North_Wales"
+                                    , "Mid_Scotland_and_Fife", "South_Wales_West"
+                                    , "Glasgow", "Central_Scotland", "South_Wales_Central", "Lothian"
+                                    , "North_East_Scotland", "South_Wales_East")
+                           , "other"
+                           , x)
+      cat(" |", currRegion, "\n")
+      
+      # use region to extract from over all grid
+      regionGrid <- fulldf.onlyAnimals %>% st_drop_geometry() %>%
+        filter(region == x)
+      head(regionGrid)
+      
+      # use the same information for the N excrete grid, but add 'All' as well
+      regionN <- excreteNcombined %>% 
+        dplyr::select(animal:UK.Region, kgNExcreteYr_housed) %>%
+        filter(UK.Region %in% c(currRegion, "All"))
+      head(regionGrid)
+      head(regionN)
+      
+      # ensure lengths match
+      stopifnot((ncol(regionGrid)-2) == nrow(regionN))
+      
+      # ensure colnames of the grid and row names of the N amounts match
+      ## ensure that across and down are in the same positions,
+      ## otherwise change their positions
+      if(identical(
+        sort(c(names(regionGrid)[3:(ncol(regionGrid))]))
+        , sort(c(regionN$animal))
+      )){
+        regionalMix <- regionN
+        cat("all names match\n")
+        
+      } else {
+        
+        # see if any names are not present
+        wx <- colnames(regionGrid)[!which(colnames(regionGrid) %in% regionN$animal)]
+        stopifnot(length(wx) == 0)
+        
+        regionalMix <- regionN[match(names(regionGrid)[2:(ncol(regionGrid)-1)]
+                                     , regionN$animal), ]   
+        
+        # recheck - identical?
+        stopifnot(identical(c(names(regionGrid)[2:(ncol(regionGrid)-1)]), c(regionalMix$animal)))
+        cat("names match after reshuffle\n")
+      }
+      
+      # multiply the animals in that region by their emissions
+      ## shorten regional animals emissions
+      regionalMix0 <- regionalMix
+      regionalMix0[is.na(regionalMix0)] <- 0
+      
+      # shorten the animal numbers
+      anr <- regionGrid %>%
+        dplyr::select(-c(rcFid_1km, region)) %>%
+        st_drop_geometry()
+      names(anr)
+      
+      stopifnot(length(regionalMix0$animal[which(!regionalMix0$animal %in% names(anr))]) == 0)
+      
+      # multiply for result
+      anrTimes <- as.matrix(anr) %*% diag(regionalMix0$kgNExcreteYr_housed) %>%
+        as.data.frame() %>%
+        mutate(totalN = rowSums(.[], na.rm = T)) 
+      head(anrTimes)
+      
+      # run some checks
+      stopifnot(anr[20, 20] * regionalMix0$kgNExcreteYr_housed[20] == anrTimes[20, 20])
+      stopifnot(anr[100, 100] * regionalMix0$kgNExcreteYr_housed[100] == anrTimes[100, 100])
+      stopifnot(anr[200, 200] * regionalMix0$kgNExcreteYr_housed[200] == anrTimes[200, 200])
+      
+      anrTimes <- anrTimes %>%
+        # include id col back in
+        bind_cols(regionGrid %>% dplyr::select(rcFid_1km), .)
+      head(anrTimes)
+      
+      # compare with the test one above - for east of England
+      if(currRegion == "East_of_England"){
+        resultsCompare <- anrTimes %>% dplyr::select(rcFid_1km, totalN) %>%
+          merge(., sumExcreteN)
+        head(resultsCompare)
+      }
+      return(anrTimes)
+    }) # end of function
+    
+    # bind all the individual regions, and make them spatial using rcFid1km
+    regionsGridNitrogen <- bind_rows(regionsNitrogen) %>%
+      dplyr::select(rcFid_1km, totalN)
+    head(regionsGridNitrogen)
+    ## make spatial
+    spatialGridN <- ghgGridGB %>%
+      merge(., regionsGridNitrogen, by = "rcFid_1km")
+    head(spatialGridN)
+    
+    ## check the example and the actual match
+    x1 <- fulldf.sumExcreteN %>%
+      filter(rcFid_1km == "487500_215500")
+    x2 <- spatialGridN %>%
+      filter(rcFid_1km == "487500_215500")
+    head(x1)
+    head(x2)
+    stopifnot(x1$total1km_kgN == x2$totalN)
+    
+    ### save
+    st_write(spatialGridN, file.path(scenarioResultsPath
+                                     , paste0("spatialN1km_kgN", scenName, ".gpkg"))
+             , append = F)
+    toc(log = T)
   }
-  
-  animalGrid <- st_read(file.path(currPath, "all_animals_1km.gpkg"))
-  head(animalGrid)
-  
-  
 } # end 'part6excretions'
 
 # tidy
@@ -4027,6 +4226,8 @@ if(part7fertiliserUse){
   ## Therefore, Table 1.2 in RB209 was used to determine how much lime would be applied
   ## ------------ ----- --------------  ##
   
+  # stop("before lime requirements")
+  
   # calculate lime requirements, in t/ha, for arable and arable
   ## for sand
   limeReqsSand <- soils %>%
@@ -4072,6 +4273,7 @@ if(part7fertiliserUse){
   # tidy
   rm(limeReqsSand, limeReqsSilt, limeReqsClay)
   
+  #### calculate lime for 2015 ####
   # limeRegs are in t/ha, so determine amount for km2 depending on arable and grass areas
   limeReqsAmounts <- cropArea %>% dplyr::select(rcFid_1km, winterwheat_ha:sugarbeet_ha, improved_grass_ha) %>%
     st_drop_geometry() %>%
@@ -4129,6 +4331,55 @@ if(part7fertiliserUse){
   Native projection: 27700")
   
   sink(file = NULL)
+  
+  #### calculate lime for SCENARIOS ####
+  
+  cat(scenarios, sep = "\n")
+  # stop("before lime scenarios")
+  
+  # create scenario save path
+  scenarioResultsPath <- file.path("scenario", "results")
+  
+  # load in all the animal grids for the scenarios
+  for(i in 1:length(scenarios)){
+    tic("scenario run")
+    scenName <- gsub(".gpkg", "", basename(scenarios[[i]]))
+    cat(paste0("starting N excretion for ... ", scenName, "[", i, "] ..."), "\n")
+    # load in full dataset
+    fulldf.in <- st_read(scenarios[[i]])
+    ## keep only crops
+    
+    head(fulldf.in)
+  
+  # limeRegs are in t/ha, so determine amount for km2 depending on arable and grass areas
+  limeReqsAmounts <- cropArea %>% dplyr::select(rcFid_1km, winterwheat_ha:sugarbeet_ha, improved_grass_ha) %>%
+    st_drop_geometry() %>%
+    # get total arable area
+    mutate(total_arab_ha = rowSums(dplyr::select(., c(winterwheat_ha:sugarbeet_ha)))) %>%
+    mutate(total_arab_ha = ifelse(is.na(total_arab_ha), 0, total_arab_ha)) %>%
+    rename(total_grass_ha = improved_grass_ha) %>%
+    dplyr::select(rcFid_1km, total_arab_ha, total_grass_ha) %>%
+    # make spatial again
+    merge(cropArea[, "rcFid_1km"], .) %>%
+    # join with advised lime amounts
+    st_join(., limeReqs %>% dplyr::select(soilTyp:limeReq_tha_gras)) %>%
+    # multiply arable cover (in hectares) by amount of lime per ha
+    mutate(limeAmount_tonnes_arab = total_arab_ha * limeReq_tha_arab
+           # and do the same for grass
+           , limeAmount_tonnes_gras = total_grass_ha * limeReq_tha_gras
+           # and add them
+           , limeAmount_tonnes = limeAmount_tonnes_arab + limeAmount_tonnes_gras) %>%
+    filter(!is.na(soilTyp))
+  head(limeReqsAmounts)
+  
+  # calculate the emissions from lime adage
+  # https://naei.beis.gov.uk/data/ef-all-results?q=184177 states that the emission factor for limestone is 0.12 t CO2e t−1
+  limeReqsAmounts$limeTco2e <- limeReqsAmounts$limeAmount_tonnes * 0.12
+  head(limeReqsAmounts)
+  
+  # save
+  st_write(limeReqsAmounts, file.path(savePath, "liming_eval.gpkg"), append = F)
+  fwrite(st_drop_geometry(limeReqsAmounts), file.path(savePath, "liming_eval.csv"), row.names = F)
   
   #### 7b. determine rainfall, crop type, and Soil Nitrogen Supply (SNS) ####
   ## ------------ Notes --------------  ##
@@ -6984,9 +7235,9 @@ for(i in 1:5){
 }
 
 tqt <- t(tq) %>% as.data.frame() %>% dplyr::select(scen
-                                                   , Lowland_60...240.months_Beef.cows
-                                                   , Medium.dairy_Dairy.calves
-                                                   , fattening_pigs_piglets
-                                                   , winterwheat_ha
-                                                   , improved_grass_ha)
+                                                   , contains(c("Lowland_60...240.months_Beef.cows"
+                                                                , "Medium.dairy_Dairy.calves"
+                                                                , "fattening"
+                                                                , "winterwheat_ha"
+                                                                , "improved_grass_ha")))
 fwrite(tqt, "tqt.csv", row.names = F)
