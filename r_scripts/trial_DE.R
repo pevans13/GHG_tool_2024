@@ -147,7 +147,7 @@ for(de in seq(65, 85, 1)){
       dplyr::select(animal, category, contains("ExcreteYr"))
     head(summariseN0)
     
-    fin <- mean(summariseN0$kgNExcreteYr_mean) - 106
+    fin <- mean(summariseN0$kgNExcreteYr_mean) - 130.8
     
     df <- bind_rows(df, 
                     bind_cols(
