@@ -122,10 +122,10 @@ part6excretions <- F
 ## 2. determine rainfall, crop type, and Soil Nitrogen Supply (SNS)
 ## 3. determine N use per km2 - derived from individual crops
 ## 4. calculate emissions based purely on assumed fertiliser
-part7fertiliserUse <- T
+part7fertiliserUse <- F
 
 # part 8 determines the emission and sequestration values based on non-agricultural land use
-part8landuse <- F
+part8landuse <- T
 
 # part 9 determines the emissions from crop residues (i.e. the non-harvested part of the plant)
 # It does this by assume that residues are managed in a certain way
@@ -5608,7 +5608,7 @@ if(part7fertiliserUse){
       fwrite(fertCO2e %>% st_drop_geometry(), file.path(savePath, "fertiliser_emissions.csv"), row.names = F)
     } else { # scenario data
       st_write(fertCO2e, xSave <- file.path(scenarioResultsPath
-                                   , paste0("fertiliser_emissions", nmscen, ".gpkg"))
+                                            , paste0("fertiliser_emissions", nmscen, ".gpkg"))
                , append = F)
       fwrite(fertCO2e %>% st_drop_geometry()
              , file.path(scenarioResultsPath
@@ -5655,7 +5655,7 @@ Data:
 
 #### 8 - part8landuse ####
 if(part8landuse){
-  
+  stop("start of part 8")
   # set input location - for land cover
   currPath <- file.path("./data_in", "land_cover")
   # and for crops
@@ -5663,18 +5663,28 @@ if(part8landuse){
   # results
   savePath <- "./results/land_use"
   
-  # import GE 1 km2 crop area for 2015
-  landArea <- st_read(file.path(currPath, "land_cover_table.gpkg")) %>%
+  # import 1 km2 crop area for 2015
+  landArea.2015 <- st_read(file.path(currPath, "land_cover_table.gpkg")) %>%
     relocate(improved_grass_ha, .before=winterwheat_ha) 
-  head(landArea)
+  head(landArea.2015)
   
-  ##### 8a - land cover #####
+  # import 1 km2 crop area for scenarios
+  landArea.names <- list.files(file.path("scenario", "scen_maps", "finer_detail")
+                               , pattern = "_land.gpkg"
+                               , full.names = T)
+  landArea.scen <- pblapply(landArea.names, function(x) {
+    st_read(x) %>%
+      relocate(improved_grass_ha, .before=winterwheat_ha) 
+  })
+  head(landArea.scen[[1]])
+  
+  ##### 8a - land cover for 2015 #####
   # make all crops into 'arable'
   # Identify the columns ending with '_ha'
-  hectareCols1 <- which(colnames(landArea) == "winterwheat_ha")
-  hectareCols2 <- which(colnames(landArea) == "sugarbeet_ha")
+  hectareCols1 <- which(colnames(landArea.2015) == "winterwheat_ha")
+  hectareCols2 <- which(colnames(landArea.2015) == "sugarbeet_ha")
   
-  cropTableHa <- landArea %>%
+  cropTableHa.2015 <- landArea.2015 %>%
     replace(is.na(.), 0) %>%
     mutate(Arable_ha = rowSums(.[, hectareCols1:hectareCols2, drop=TRUE], na.rm = TRUE)) %>%
     dplyr::select(-c(winterwheat_ha:sugarbeet_ha)) %>%
@@ -5683,11 +5693,11 @@ if(part8landuse){
              , neutral_grass_ha, calc_grass_ha, acid_grass_ha, fen_marsh_ha, heather_ha               
              , heather_grass_ha, bog_ha, inland_rock_ha, saltwater_ha, freshwater_ha, sup_lit_rock_ha
              , sup_lit_sed_ha, lit_rock_ha, lit_sed_ha, saltmarsh_ha, urban_ha, suburban_ha)
-  head(cropTableHa)
+  head(cropTableHa.2015)
   
   # save
-  st_write(cropTableHa, file.path(currPath, "land_cover_area.gpkg"), append = F)
-  fwrite(st_drop_geometry(cropTableHa)
+  st_write(cropTableHa.2015, file.path(currPath, "land_cover_area.gpkg"), append = F)
+  fwrite(st_drop_geometry(cropTableHa.2015)
          , file.path(currPath, "land_cover_area.csv")
          , row.names = F)
   
@@ -5731,6 +5741,82 @@ Temporal coverage: 2016
 Native projection: 27700
       
 citations: Rowland, C.S.; Morton, R.D.; Carrasco, L.; McShane, G.; O'Neil, A.W.; Wood, C.M. (2017). Land Cover Map 2015 (1km dominant aggregate class, GB). NERC Environmental Information Data Centre. https://doi.org/10.5285/711c8dc1-0f4e-42ad-a703-8b5d19c92247 ")
+  
+  sink(file = NULL)
+  
+  ##### 8a2 - land cover for scenarios #####
+  # create new land cover directory
+  dir.create(file.path("scenario", "scen_maps", "land_cover")
+             , showWarnings = F)
+  
+  # make all crops into 'arable'
+  # Identify the columns ending with '_ha'
+  hectareCols1 <- which(colnames(landArea.scen[[1]]) == "winterwheat_ha")
+  hectareCols2 <- which(colnames(landArea.scen[[1]]) == "sugarbeet_ha")
+  
+  for(x in 1:length(landArea.scen)){
+    # name
+    nm <- gsub("_land.gpkg", "", basename(landArea.names[[x]]))
+    x2 <- landArea.scen[[x]] %>%
+      replace(is.na(.), 0) %>%
+      mutate(Arable_ha = rowSums(.[, hectareCols1:hectareCols2, drop=TRUE], na.rm = TRUE)) %>%
+      dplyr::select(-c(winterwheat_ha:sugarbeet_ha)) %>%
+      # assign correct order
+      relocate(broadleaf_ha, conifer_ha, Arable_ha, improved_grass_ha
+               , neutral_grass_ha, calc_grass_ha, acid_grass_ha, fen_marsh_ha, heather_ha               
+               , heather_grass_ha, bog_ha, inland_rock_ha, saltwater_ha, freshwater_ha, sup_lit_rock_ha
+               , sup_lit_sed_ha, lit_rock_ha, lit_sed_ha, saltmarsh_ha, urban_ha, suburban_ha)
+    # save
+    st_write(x2, file.path("scenario", "scen_maps", "land_cover"
+                           , paste0("land_cover_area", nm, ".gpkg"))
+             , append = F)
+  }
+  
+  # write readme
+  sink(file = NULL)
+  sink(file = file.path("scenario", "scen_maps", "land_cover", "readme_land_cover_area.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'land_cover_area' contain the area, in hectares, of different land covers, derived from Redhead et al. (2020).
+The prefixes of the file names relate to specific scenarios taken from Redhead et al. (2020):
+  'Ag_15' and 'Ag_30' = 15 and 30% agricultural expansion from the 2007 baseline
+  'Gr_15' and 'Gr_30' = 15 and 30% grassland restoration from the 2007 baseline
+  'baseline2007' = baseline land cover from 2007
+The maps were specifically used from the baseline, 15% and 30% increase in grassland, and 15% increase in agriculutral expansion.
+The columns:
+      'rcFid' = 1 km reference id
+      '[land cover type]' = area of the land covered, in ha, by the title land cover type in a 1 km2 pixel
+          land covers:
+           arable = winter wheat + winter barley + spring wheat + oats + maize + rapeseed + spring barley + potato + field beans + sugat beet
+           improved_grass = improved grassland
+           broadleaf = broadleaved woodland
+           conifer = coniferous woodland
+           neutral_grass = neutral grassland
+           calc_grass = calcareous grassland
+           acid_grass = acid grassland
+           fen_marsh = fen, marsh, and swamp
+           heather = heather
+           heather_grass = heather grassland
+           bog = bog
+           inland_rock = inland rock
+           saltwater = saltwater
+           freshwater = freshwater
+           sup_lit_rock = supra-littoral rock
+           sup_lit_sed = supra-littoral sediment
+           lit_rock = littoral rock
+           lit_sed = littoral sediment
+           saltmarsh = saltmarsh
+           urban = urban
+           suburban = suburban
+units: ha/km2 
+Spatial resolution: 1 km2
+Spatial extent: England
+Temporal coverage: 2016
+Native projection: 27700
+      
+citations: Redhead, J. W., Powney, G. D., Woodcock, B. A., & Pywell, R. F. (2020). Effects of future agricultural change scenarios on beneficial insects. Journal of Environmental Management, 265, 110550. https://doi.org/10.1016/j.jenvman.2020.110550")
   
   sink(file = NULL)
   
@@ -5884,14 +5970,14 @@ the 'ccs_ees_margins.gpkg' file includes data that were obtained from Countrysid
   st_write(hedgePoints, file.path(currPath, "hedge_dims.gpkg"), append = F)
   
   # using cropTable, add the points to a polygon, keeping the information from both
-  hedgePolyInter <- st_intersection(hedgePoints, cropTableHa) %>%
+  hedgePolyInter <- st_intersection(hedgePoints, cropTableHa.2015) %>%
     st_as_sf() %>%
     # remove points
     st_drop_geometry() %>%
     # keep only necessary
     dplyr::select(rcFid_1km, hedgeAreaMperKm2, hedgeVolumeMperKm2) %>%
     # merge into polygons
-    merge(cropTableHa %>% dplyr::select(rcFid_1km), .)
+    merge(cropTableHa.2015 %>% dplyr::select(rcFid_1km), .)
   head(hedgePolyInter)
   
   # convert m2 to ha
@@ -5933,8 +6019,8 @@ the 'HedgeLength.grd' file includes data that were obtained from Scholefield et 
 citation: Scholefield, P.A.; Morton, R.D.; Rowland, C.S.; Henrys, P.A.; Howard, D.C.; Norton, L.R. (2016). Woody linear features framework, Great Britain v.1.0. NERC Environmental Information Data Centre. https://doi.org/10.5285/d7da6cb9-104b-4dbc-b709-c1f7ba94fb16")
   sink(file = NULL)
   
-  #### 8d - combine land cover data into one dataframe ####
-  landCoverHa <- merge(merge(cropTableHa
+  ##### 8d - combine land cover data into one dataframe #####
+  landCoverHa <- merge(merge(cropTableHa.2015
                              , marginSum %>% st_drop_geometry()
                              , by = "rcFid_1km", all = T)
                        , hedgePolyInter %>% dplyr::select(rcFid_1km, hedgeAreaHaperKm2) %>% st_drop_geometry()
@@ -6010,7 +6096,78 @@ citations:  Rowland, C.S.; Morton, R.D.; Carrasco, L.; McShane, G.; O'Neil, A.W.
     dplyr::select(-c(Arable_ha, improved_grass_ha))
   head(landCoverHaAdapt)
   
-  ##### 8f - get emissions #####
+  ##### 8f - use 2015 data to get 2007 margins etc #####
+  # get the average margins and hedges per pixel, based on land cover types
+  landCoverHa.analysis <- landCoverHa %>% st_drop_geometry() %>%
+    # calculate all grasses
+    mutate(all_grass_ha = rowSums(select(., neutral_grass_ha:heather_grass_ha))) %>%
+    # keep only grasses, arable, and improved grassland
+    dplyr::select(rcFid_1km, Arable_ha, improved_grass_ha, all_grass_ha
+                  , flowerMargin_ha: hedgeAreaHaperKm2)
+  head(landCoverHa.analysis)
+  
+  ## model flower margin
+  fmMod <- lm(flowerMargin_ha ~ Arable_ha + improved_grass_ha + all_grass_ha
+              , data = landCoverHa.analysis)
+  ## model tree margin
+  tmMod <- lm(treeMargin_ha ~ Arable_ha + improved_grass_ha + all_grass_ha
+              , data = landCoverHa.analysis)
+  ## model hedges
+  hedgeMod <- lm(hedgeAreaHaperKm2 ~ Arable_ha + improved_grass_ha + all_grass_ha
+                 , data = landCoverHa.analysis)
+  
+  ### use the above models to determine the area of margins and hedges for the scenarios
+  scen2007 <- list.files(file.path("scenario", "scen_maps", "land_cover")
+                         , pattern = ".gpkg$", full.names = T)
+  landCoverHa.scens <- pblapply(scen2007, function(i) {
+    # read in
+    xInSpat <- st_read(i)
+    xIn <- xInSpat %>% st_drop_geometry() %>%
+      # calculate all grasses
+      mutate(all_grass_ha = rowSums(select(., neutral_grass_ha:heather_grass_ha))) %>%
+      # keep only grasses, arable, and improved grassland
+      dplyr::select(rcFid_1km, Arable_ha, improved_grass_ha, all_grass_ha) %>%
+      ## predict the margins and hedges
+      mutate(hedgeAreaHaperKm2 = predict(hedgeMod, .)
+             , flowerMargin_ha = predict(fmMod, .)
+             , treeMargin_ha = predict(tmMod, .)) %>%
+      ### if any below 0, make 0
+      mutate(hedgeAreaHaperKm2 = ifelse(hedgeAreaHaperKm2<0, 0, hedgeAreaHaperKm2)
+             , flowerMargin_ha = ifelse(flowerMargin_ha<0, 0, flowerMargin_ha)
+             , treeMargin_ha = ifelse(treeMargin_ha<0, 0, treeMargin_ha))
+    head(xIn)
+    # get nm
+    nm <- gsub(".*area(.+).gpkg", "\\1", i)
+    print(nm)
+    # range
+    print(range(xIn$hedgeAreaHaperKm2))
+    
+    ### adjust area based on margins and hedges
+    # reduce area of arable and improved grassland for field margins and hedgerows respectively
+    landCoverHaAdapt <- xIn %>%
+      dplyr::select(rcFid_1km, hedgeAreaHaperKm2 : treeMargin_ha) %>%
+      # merge with the original spatial df
+      merge(xInSpat, .) %>%
+      mutate(arableNew_ha = Arable_ha - (flowerMargin_ha + treeMargin_ha)
+             # if the above lead to negative arable, take off IG instead
+             , IGnew_ha = ifelse(arableNew_ha < 0, improved_grass_ha - abs(arableNew_ha)
+                                 , improved_grass_ha)
+             , arableNew_ha = ifelse(arableNew_ha < 0, 0, arableNew_ha)
+             , IGnew_ha = ifelse(IGnew_ha < 0, 0, IGnew_ha)) %>%
+      # reorder
+      relocate(rcFid_1km, broadleaf_ha, conifer_ha, arableNew_ha, IGnew_ha) %>%
+      # remove unneeded
+      dplyr::select(-c(Arable_ha, improved_grass_ha))
+    head(landCoverHaAdapt)
+    return(landCoverHaAdapt)
+  })
+  head(landCoverHa.scens[[1]])
+  
+  ##### 8g - get emissions (for original data and scenarios) #####
+  # list all data
+  ## original = 1 + scens
+  landCoverHa.length <- 1 + length(landCoverHa.scens)
+  
   # read in table with CO2e coefficients
   lcCoefficients <- fread("data_in/land_cover/lcm_land_cover_co2.csv") %>% as.data.frame() %>%
     rename(tCO2_ha = 3) %>%
@@ -6018,78 +6175,95 @@ citations:  Rowland, C.S.; Morton, R.D.; Carrasco, L.; McShane, G.; O'Neil, A.W.
     mutate(tCO2_25m2 = tCO2_ha / 10000)
   head(lcCoefficients)
   
-  # ensure the land use headers, and coefficients are in the same order
-  stopifnot(grepl("rable", lcCoefficients$`LCM2015 target class`[[3]]) & grepl("rable", names(landCoverHaAdapt)[4]))
-  stopifnot(grepl("uburban", lcCoefficients$`LCM2015 target class`[[21]]) & grepl("uburban", names(landCoverHaAdapt)[22]))
+  for(i in 1:landCoverHa.length){
+    
+    if(i == 1){
+      lcIn <- landCoverHa
+      nm <- "original_data"
+      saveName <- file.path(savePath, "land_use_emissions.gpkg")
+    } else {
+      lcIn <- landCoverHa.scens[[i-1]]
+      nm <- gsub("_land.gpkg", "", basename(landArea.names[[i-1]]))
+      saveName <- file.path("scenario", "results"
+                            , paste0("land_use_emissions", nm, ".gpkg"))
+    }
+    cat("... Calculating emissions from land use for", nm, "... \n")
+    # print(head(lcIn))
+    
+    # ensure the land use headers, and coefficients are in the same order
+    stopifnot(grepl("rable", lcCoefficients$`LCM2015 target class`[[3]]) & grepl("rable", names(lcIn)[4]))
+    stopifnot(grepl("uburban", lcCoefficients$`LCM2015 target class`[[21]]) & grepl("uburban", names(lcIn)[22]))
+    
+    ##### non-margin land use #####
+    # multiply the area (in ha) by the per ha values
+    cropTimesCoef <- lcIn %>% st_drop_geometry() %>%
+      dplyr::select(-c(rcFid_1km, flowerMargin_ha, treeMargin_ha, hedgeAreaHaperKm2)) %>%
+      as.matrix %*% diag(lcCoefficients$tCO2_ha) %>% as.data.frame()
+    # rename
+    names(cropTimesCoef) <- paste0(names(lcIn)[2:22], "_tCO2")
+    names(cropTimesCoef) <- sub("_ha", "", (names(cropTimesCoef)))
+    head(cropTimesCoef)
+    # get totals
+    cropTimesCoef <- cropTimesCoef %>%
+      mutate(total_landuse_tco2 = rowSums(select(., c(broadleaf_tCO2:suburban_tCO2))))
+    
+    # add ref id back in
+    cropTimesCoef <- bind_cols(rcFid_1km = lcIn$rcFid_1km
+                               , cropTimesCoef) 
+    stopifnot(names(cropTimesCoef)[1] == "rcFid_1km")
+    head(cropTimesCoef)
+    
+    ##### field margins #####    
+    # get co2e emissions/ uptake from size of field margins - grass strips
+    # using the middle value from Yang et al. (2019),
+    #  = 1.834 Mg CO2 ha-1 yr-1
+    # note: lots of different estimates exist - from uptake to emissions
+    # multiply by area
+    
+    # get co2e emissions/ uptake from size of field margins - tree strips
+    # use the value from Falloon et al. (2004) for natural BL regen:
+    # 10276 kg co2 (see Google Doc)
+    
+    landCoverHaMargin <- lcIn %>%
+      mutate(fm_kgCo2Ha = (
+        # converts Mg to kg, and uptake
+        (lcIn$flowerMargin_ha * 1.834) / 1000 * -1) +  # if flower
+          (lcIn$treeMargin_ha * 10276) * -1) # if tree
+    head(landCoverHaMargin)
+    
+    ##### hedgerow #####   
+    # using the values from Blair (2021), convert ground area into emissions
+    landCoverHaHedge <- lcIn %>%
+      mutate(emisHedge_tco2e = hedgeAreaHaperKm2 * -9.305)
+    
+    ##### combine ##### 
+    combineEmis <- Reduce(function(x, y) {
+      merged_data <- merge(
+        x, y
+        , all = TRUE
+      )
+      return(merged_data)
+    }, list(cropTimesCoef, landCoverHaMargin, landCoverHaHedge)) %>%
+      dplyr::select(-c(broadleaf_ha: suburban_ha, hedgeAreaHaperKm2)) %>%
+      # create t for kg for fm_kgCo2Ha
+      mutate(fm_tco2 = fm_kgCo2Ha/1000) %>%
+      st_drop_geometry() %>%
+      dplyr::select(-c(fm_kgCo2Ha, flowerMargin_ha, treeMargin_ha)) %>%
+      # final sum
+      mutate('landCoverTotalEmis_tco2' = rowSums(select(., c(total_landuse_tco2, emisHedge_tco2e, fm_tco2)), na.rm = T)) %>%
+      st_as_sf()
+    # head(combineEmis)
+    # str(combineEmis)
+    attributes(combineEmis$total_landuse_tco2) <- NULL
+    
+    cat("           Saving here:", saveName, "\n")
+    st_write(combineEmis, saveName, append = F)
+    fwrite(st_drop_geometry(combineEmis)
+           , gsub(".gpkg", ".csv", saveName)
+           , row.names = F)
+  }
   
-  ##### non-margin land use #####
-  # multiply the area (in ha) by the per ha values
-  cropTimesCoef <- landCoverHaAdapt %>% st_drop_geometry() %>%
-    dplyr::select(-c(rcFid_1km, flowerMargin_ha, treeMargin_ha, hedgeAreaHaperKm2)) %>%
-    as.matrix %*% diag(lcCoefficients$tCO2_ha) %>% as.data.frame()
-  # rename
-  names(cropTimesCoef) <- paste0(names(landCoverHaAdapt)[2:22], "_tCO2")
-  names(cropTimesCoef) <- sub("_ha", "", (names(cropTimesCoef)))
-  head(cropTimesCoef)
-  # get totals
-  cropTimesCoef <- cropTimesCoef %>%
-    mutate(total_landuse_tco2 = rowSums(select(., c(broadleaf_tCO2:suburban_tCO2))))
-  
-  # add ref id back in
-  cropTimesCoef <- bind_cols(landCoverHaAdapt$rcFid_1km
-                             , cropTimesCoef) %>%
-    rename(rcFid_1km = 1)
-  head(cropTimesCoef)
-  
-  ##### field margins #####    
-  # get co2e emissions/ uptake from size of field margins - grass strips
-  # using the middle value from Yang et al. (2019),
-  #  = 1.834 Mg CO2 ha-1 yr-1
-  # note: lots of different estimates exist - from uptake to emissions
-  # multiply by area
-  
-  # get co2e emissions/ uptake from size of field margins - tree strips
-  # use the value from Falloon et al. (2004) for natural BL regen:
-  # 10276 kg co2 (see Google Doc)
-  
-  landCoverHaMargin <- landCoverHaAdapt %>%
-    mutate(fm_kgCo2Ha = (
-      # converts Mg to kg, and uptake
-      (landCoverHaAdapt$flowerMargin_ha * 1.834) / 1000 * -1) +  # if flower
-        (landCoverHaAdapt$treeMargin_ha * 10276) * -1) # if tree
-  head(landCoverHaMargin)
-  
-  ##### hedgerow #####   
-  # using the values from Blair (2021), convert ground area into emissions
-  landCoverHaHedge <- landCoverHaAdapt %>%
-    mutate(emisHedge_tco2e = hedgeAreaHaperKm2 * -9.305)
-  
-  ##### combine ##### 
-  combineEmis <- Reduce(function(x, y) {
-    merged_data <- merge(
-      x, y
-      , all = TRUE
-    )
-    return(merged_data)
-  }, list(cropTimesCoef, landCoverHaMargin, landCoverHaHedge)) %>%
-    dplyr::select(-c(broadleaf_ha: suburban_ha, hedgeAreaHaperKm2)) %>%
-    # create t for kg for fm_kgCo2Ha
-    mutate(fm_tco2 = fm_kgCo2Ha/1000) %>%
-    st_drop_geometry() %>%
-    dplyr::select(-c(fm_kgCo2Ha, flowerMargin_ha, treeMargin_ha)) %>%
-    # final sum
-    mutate('landCoverTotalEmis_tco2' = rowSums(select(., c(total_landuse_tco2, emisHedge_tco2e, fm_tco2)), na.rm = T)) %>%
-    st_as_sf()
-  head(combineEmis)
-  str(combineEmis)
-  attributes(combineEmis$total_landuse_tco2) <- NULL
-  
-  st_write(combineEmis, file.path(savePath, "land_use_emissions.gpkg"), append = F)
-  fwrite(st_drop_geometry(combineEmis)
-         , file.path(savePath, "land_use_emissions.csv")
-         , row.names = F)
-  
-  # write readme
+  # write readme (for original data)
   sink(file = NULL)
   sink(file = file.path(savePath, "readme_land_use_emissions.md"))
   cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
@@ -6114,6 +6288,34 @@ Data:
   
   sink(file = NULL)
   
+  # write readme (for scenarios)
+  sink(file = NULL)
+  sink(file = file.path("scenario", "results", "readme_land_use_emissions.md"))
+  cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
+Date created: 2023-05-03
+Last update:",  format(Sys.Date()), "
+
+The files containing 'land_use_emissions' contain information the annual amount of emissions or uptake CO2 per km2, based on underlying land covers. The land cover areas were derived from the 2007 land cover map, and the scenarios found in Redhead et al. (2020).
+The suffixes of the file names relate to specific scenarios taken from Redhead et al. (2020):
+  'Ag_15' and 'Ag_30' = 15 and 30% agricultural expansion from the 2007 baseline
+  'Gr_15' and 'Gr_30' = 15 and 30% grassland restoration from the 2007 baseline
+  'baseline2007' = baseline land cover from 2007
+  
+The columns:
+      'rcFid_1km' = 1 km reference id
+      '[land cover type]_tCO2' = emissions or sequestration (represented by a '-' value) of CO2 that each land cover contributes across a 1 km2 (units: tonnes CO2/km2/yr)
+      'total_landuse_tco2' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on the composition of land covers at 25 m2 (units: tonnes CO2/km2/yr)
+      'emisHedge_tco2e' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on area of hedges (units: tonnes CO2/km2/yr)
+      'fm_tco2' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on area of field margins (units: tonnes CO2/km2/yr)
+      'landCoverTotalEmis_tco2' = total emissions or sequestration (represented by a '-' value) of CO2 for a 1 km2, based on broad land cover categories, field margins, and hedges (units: tonnes CO2/km2/yr)
+Data:
+    units: tonnes CO2/km2/yr 
+    Spatial resolution: 1 km2
+    Spatial extent: GB
+    Temporal coverage: 2015
+    Native projection: 27700")
+  
+  sink(file = NULL)
 }
 
 #### 9 - part9residue ####
