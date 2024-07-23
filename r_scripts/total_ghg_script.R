@@ -136,7 +136,7 @@ part9residue <- F
 part10onfarmenergy <- F
 
 # combine all the final emissions together
-part11combineemissions <- T
+part11combineemissions <- F
 
 if(runAll){
   createGrid <- part1LandCoverGrid <- part2AnimalGrid <- T
@@ -2320,6 +2320,7 @@ if(part3AnimalAttributes){
   cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
 Date created: 2023-05-03
 Last update:",  format(Sys.Date()), "
+Produced by 'total_ghg_script.R'
 
 Files:
   animal_coefs_net_energy.csv
@@ -2478,19 +2479,26 @@ if(part4Enteric){
             'DE' = 65 - 85
     
   Data: GE required per animal category per day per animal
-  units: MJ per day
-  Spatial extent: UK
-  Native projection: 27700")
+  units: MJ per day")
   
   sink(file = NULL)
   # tidy
   rm(GEremHoused, GEreg, GEremLrg, GEremregHoused, GEremregSml, GEremSml
      , GEremregLrg, de)
   
-  # check to ensure that it is about right i.e. 1.5 percent and 3.0 percent of the animal’s weight.
-  # to check, (Gibb, 2002) the estimate can be converted in daily intake in kilograms by dividing by 18.45 MJ/kg.
-  # check middling column
+  ## ------------ Notes --------------  ##
+  ## check to ensure that it is about right i.e. 1.5 percent and 3.0 percent of the animal’s weight.
+  ## to check  the estimate can be converted in daily intake in kilograms by dividing by 18.45 MJ/kg.
+  ## check middling column.
+  ##
+  ## Gibb (2002): 'To check the estimate of daily gross energy intake from Equation 14, the estimate can be converted in daily
+  ## intake in kilograms by dividing by 18.45 MJ/kg. This estimate of intake in kilograms should generally be
+  ## between 1.5 percent and 3.0 percent of the animal’s weight'
+  ## ------------ ----- --------------  ##
+  
   GEcheck <- as.data.frame(cbind(animal = netEnergyTable$animal
+                                 , category = netEnergyTable$category
+                                 , UK.Region = netEnergyTable$UK.Region
                                  , GE65 = GEtableOut$MJdayGEsml_65 / 18.45
                                  , GE85 = GEtableOut$MJdayGEsml_85 / 18.45
                                  , weightFrom = netEnergyTable$Weight_Kg * 0.015
@@ -2503,7 +2511,11 @@ if(part4Enteric){
                                              , if_else(GE65 > weightTo, "NO - too high", "NO")))) %>%
     mutate(fitCriteria85 = if_else(GE85 >= weightFrom & GE85 <= weightTo, "Yes"
                                    , if_else(GE85 < weightFrom, "NO - too low"
-                                             , if_else(GE85 > weightTo, "NO - too high", "NO"))))
+                                             , if_else(GE85 > weightTo, "NO - too high", "NO")))) %>%
+    mutate(difference65 = ifelse(fitCriteria65 != "Yes", (abs(GE65-weightFrom)/actualWeight)* 100, 0)) %>%
+    mutate(difference85 = if_else(fitCriteria85 != "Yes", (abs(GE85-weightFrom)/actualWeight)* 100, 0)) %>%
+    group_by(animal, UK.Region) %>%
+    summarise(cc = mean(difference85))
   head(GEcheck)
   
   # Using values from GHGi (2019; appendix A3.3.1) (for the UK), check dairy cows have enough GE
@@ -2517,8 +2529,8 @@ if(part4Enteric){
     summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) %>%
     rowwise %>% 
     do(as.data.frame(.) %>% { 
-      # select just housed 85 and small field 65
-      subs <- dplyr::select(., MJdayGEhoused_85: MJdayGEsml_75)
+      # select just housed 85 and small field 79
+      subs <- dplyr::select(., MJdayGEhoused_85, MJdayGEsml_79)
       mutate(., Min = subs %>% min,
              Max = subs %>% max) 
     } ) %>%
@@ -2641,7 +2653,20 @@ if(part4Enteric){
   dairyCH4.crit$min <- do.call(pmin, dairyCH4.crit)
   dairyCH4.crit$max <- do.call(pmax, dairyCH4.crit)
   dairyCH4.crit <- dairyCH4.crit %>%
-    mutate(fitCriteria = if_else(min <= 125.44 & max >= 125.44
+    mutate(fitCriteria = if_else(min <= 125.44 & max >= 125.44 #covers the range
+                                 , "Yes"
+                                 , "NO"))
+  
+  # repeat based on current DE used
+  dairyCH4.critCurr <- dairyCH4 %>%
+    # remove heifers
+    filter(category != "heifer") %>%
+    dplyr::select(contains(c("housed_85", "sml_79")))
+  ## max min
+  dairyCH4.critCurr$min <- do.call(pmin, dairyCH4.critCurr)
+  dairyCH4.critCurr$max <- do.call(pmax, dairyCH4.critCurr)
+  dairyCH4.critCurr <- dairyCH4.critCurr %>%
+    mutate(fitCriteria = if_else(min <= 125.44 & max >= 125.44 #covers the range
                                  , "Yes"
                                  , "NO"))
   
@@ -2683,7 +2708,6 @@ if(part4Enteric){
     filter(category != "heifer")
   mean(dairyCH4v3$litDifference)
   
-  
   # see with all possibilities
   dairyCH4v3 <- dairyCH4 %>%
     dplyr::select(-c(Min, Max, fitCriteria)) %>%
@@ -2691,7 +2715,7 @@ if(part4Enteric){
     # refine to just the criterai matched ones
     dplyr::select(contains(c(criteria.match)))
   
-  # stop("ouch")
+  # stop(dairy")
   
   # although lambs always housed
   CH4EntFerm <- DEtable2 %>%
@@ -2932,7 +2956,7 @@ if(part5ManureManagement){
   ## ------------ Notes --------------  ##
   ## get the average of the selected DE compared published values
   ## you can comment out this section to test other values
-  # DEinside <- 81 # 'housed' value
+  # DEinside <- 85 # 'housed' value
   # DEoutside <- 79 # outside value
   # inDE <- paste0("housed_", DEinside)
   # outDE <- paste0("sml_", DEoutside)
@@ -2946,7 +2970,7 @@ if(part5ManureManagement){
   # mean(c(mean(limitTest[, 3]), mean(limitTest[, 4]))) - 5.73
   ## ------------ ----- --------------  ##
   
-  # see which are too high low, specifically
+  # see which are too high or low
   VScheck <- VStable %>%
     filter(grepl("lactat", category)) %>%
     # group by animal and category, to get average regardless of region
@@ -2961,10 +2985,23 @@ if(part5ManureManagement){
   which(colSums(VScheck[, 3:ncol(VScheck)]) == 24)
   cn <- names(VScheck %>% ungroup() %>%
                 dplyr::select(kgVSdayhoused_65:kgVSdaylrg_85))[which(colSums(VScheck[, 3:ncol(VScheck)]) == 24)]
+  cn
   # reduce criteria match to ones that match both the literature stated EF and VS quantities
-  criteria.match2 <- criteria.match[which(grepl(paste(gsub("kgVSday", "", as.character(cn)), collapse =  "|"), gsub("MJdayGE", "", criteria.match)))]
+  criteria.match2 <- criteria.match[which(grepl(paste(gsub("kgVSday", "", as.character(cn)), collapse =  "|")
+                                                , gsub("MJdayGE", "", criteria.match)))]
   criteria.match2 <- gsub("MJdayGE", "", criteria.match2)
   criteria.match2
+  
+  UpperMax <- 10.86
+  lowerMin <- 1.67
+  
+  # see which are too high or low - based on max and min
+  VScheckMM <- VStable %>%
+    filter(grepl("lactat", category)) %>%
+    # group by animal and category, to get average regardless of region
+    group_by(animal, category) %>%
+    summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) %>%
+    mutate(across(where(is.numeric), ~ ifelse(. > lowerMin & . < UpperMax, 1, 0)))
   
   # save tables
   # average VS per day
@@ -3535,6 +3572,7 @@ if(part6excretions){
   head(NexcreteCows)
   
   # should be near: 130.8 kg N/ dairy cow / yr [based on 358.4 g/d (Bougouin et al., 2022)]
+  # which is equivalent to 65.4 for the 6-month portion outside
   ## get means for all of the same animal, category
   summariseN0 <- NexcreteCows %>%
     group_by(animal, category) %>%
@@ -3584,16 +3622,6 @@ if(part6excretions){
                                 , NexcreteNoBovine) 
   head(excreteNcombined)
   table(excreteNcombined$UK.Region)
-  
-  # get means for all of the same animal, category
-  summariseN <- excreteNcombined %>%
-    group_by(animal, category) %>%
-    dplyr::summarise(across(where(is.numeric)
-                            , list(mean = ~ mean(., na.rm = TRUE)))) %>%
-    filter(grepl("dairy", category)) %>%
-    dplyr::select(animal, category, contains("ExcreteYr"))
-  head(summariseN)
-  # should be near: 106 kg N/cow
   
   # save
   fwrite(excreteNcombined
@@ -4541,6 +4569,15 @@ if(part7fertiliserUse){
                              filter(crop_type != "cereal")
                            , snsCereals)
   } else {
+    # merge with crop data
+    cropSoilRain <- rootDepthUK %>%
+      merge(., iscen %>% st_drop_geometry() %>%
+              dplyr::select(rcFid_1km, X, Y, scen
+                            , ends_with("_ha"))
+            , by = c("X", "Y"), all = T) %>%
+      filter(!is.na(rcFid_1km)) %>%
+      filter(!is.na(soilTyp))
+    
     # create a table from the unique crop and categories
     ## unique RB209 categories
     uniqueRb209Crops <- c("beans", "cereal" # cereal crops are maize + winterwheat + winterbarley + springwheat + springbarley
@@ -4557,6 +4594,15 @@ if(part7fertiliserUse){
   if(file.exists(file.path(CropPath, "snsCropTableCompleted.csv"))){
     snsCropParameters <- fread(file.path(CropPath, "snsCropTableCompleted.csv"))
   } else {
+    
+    # merge with crop data
+    cropSoilRain <- rootDepthUK %>%
+      merge(., iscen %>% st_drop_geometry() %>%
+              dplyr::select(rcFid_1km, X, Y, scen
+                            , ends_with("_ha"))
+            , by = c("X", "Y"), all = T) %>%
+      filter(!is.na(rcFid_1km)) %>%
+      filter(!is.na(soilTyp))
     # create a table from the unique crop and categories
     ## unique RB209 categories
     uniqueRb209Crops <- c("beans", "maize", "winterwheat", "winterbarley", "springwheat", "springbarley"
@@ -4811,6 +4857,22 @@ if(part7fertiliserUse){
   ## ------------ ----- --------------  ##
   # stop("SNS and crops produced")
   
+  ## add a df here that connects rcFid_1km and X and Y
+  ## ------------ Notes --------------  ##
+  ## use cropArea which has land cover as part of it
+  ## get centroids, then get X and Y
+  ## ------------ ----- --------------  ##
+  XYrcFid_1km <- cropArea %>% st_centroid()
+  XYrcFid_1km <- XYrcFid_1km %>%
+    mutate(X = as.integer(unlist(map(XYrcFid_1km$geom, 1))),
+           Y = as.integer(unlist(map(XYrcFid_1km$geom, 2)))) %>%
+    st_drop_geometry() %>%
+    dplyr::select(rcFid_1km, X, Y
+                  , ends_with("_ha"))
+  XYrcFid_1km <- rootDepthUK %>%
+    merge(., XYrcFid_1km)
+  head(XYrcFid_1km)
+  
   # get all unique names
   startCol <- which(colnames(snsParas) == "sns0_forage")
   endCol <- which(colnames(snsParas) == "sns3_uncropped")
@@ -4847,11 +4909,13 @@ if(part7fertiliserUse){
   unique(snsParasKgN$scen)
   
   tic("snsParasKgN2")
+  # merge with crop data
+  
   snsParasKgN <- snsParasKgN %>%
     # get total
     mutate(totalNperKm = rowSums(select(., 3:last_col()), na.rm = T)) %>%
     # merge back to spatial
-    merge(cropSoilRain %>% dplyr::select(X, Y, rcFid_1km), .)
+    merge(XYrcFid_1km %>% dplyr::select(X, Y, rcFid_1km), .)
   head(snsParasKgN)
   toc(log = T)
   unique(snsParasKgN$scen)
@@ -4990,6 +5054,7 @@ if(part7fertiliserUse){
   #### 7c - determine emissions factors for fertiliser use ####
   rm(list=setdiff(ls(), c("CropPath", "savePath", "snsParasKgNman"
                           , "scenarios", "scenarioResultsPath"
+                          , "XYrcFid_1km"
                           , "cropSoilRain", "soils", objKeep)))
   gc()
   
@@ -5014,6 +5079,7 @@ if(part7fertiliserUse){
   ## there are three categories for soil texture: 'fine', 'medium', or 'course'
   ## this will be based on the soil type that that cell was assigned to
   ## ------------ ----- --------------  ##
+  cropSoilRain <- XYrcFid_1km
   fertiliserFactors <- cropSoilRain %>%
     dplyr::select(rcFid_1km, soilTyp) %>%
     # add soil texture 
@@ -5204,7 +5270,7 @@ if(part7fertiliserUse){
   
   head(fertiliserFactors)
   
-  stop("this is point at which the scenarios need to be calculated separately")
+  # stop("this is point at which the scenarios need to be calculated separately")
   rm(fertClasses, fertClassesDirect, fertClassesSplit)
   gc()
   
@@ -5655,7 +5721,7 @@ Data:
 
 #### 8 - part8landuse ####
 if(part8landuse){
-  stop("start of part 8")
+  # stop("start of part 8")
   # set input location - for land cover
   currPath <- file.path("./data_in", "land_cover")
   # and for crops
@@ -6978,7 +7044,7 @@ Data:
 #### 10 - part10onfarmenergy ####
 if(part10onfarmenergy){
   
-  stop("start of energy - part 10")
+  # stop("start of energy - part 10")
   
   currPath <- file.path("data_in", "land_cover")
   savePath <- file.path("results", "land_use")
@@ -7407,7 +7473,7 @@ Data:
 #### 11 - part11combineemissions ####
 if(part11combineemissions){
   
-  stop("part11")
+  # stop("part11")
   
   # griddf = gridAnimals
   # rSel = entFerm
@@ -7909,6 +7975,8 @@ fwrite(tqt, "tqt.csv", row.names = F)
 # create saving directory
 dir.create(file.path("scenario", "final_results"), showWarnings = F)
 
+# stop("part 13 - scenario end")
+
 # create a tranposed multiply function
 ## run it through a function, extracting one region at a time
 regionsTranspose <- function(griddf = "x"
@@ -8057,6 +8125,9 @@ animalArea.scens <- list.files(file.path("scenario", "scen_maps", "finer_detail"
 ## go through each scenario, one at a time
 ## ------------ ----- --------------  ##
 
+resultsPath <- file.path("scenario", "results")
+currPath <- file.path("data_in", "animals")
+
 # get general region
 reg <- st_read(file.path(currPath, "nonBovine_grid_2020_1km.gpkg")) %>%
   dplyr::select(rcFid_1km, region) %>% st_drop_geometry()
@@ -8115,7 +8186,7 @@ for(sn in scenNames){
   #### 13bs - enteric fermentation ####
   cat("         calculating enteric fermentation ...\n")
   # load in enteric fermentation - a per-animal emission value
-  entFerm <- fread(file.path(resultsPath, "animals", "entericFermCH4CO2e.csv")
+  entFerm <- fread(file.path("results", "animals", "entericFermCH4CO2e.csv")
                    , showProgress = FALSE)
   head(entFerm)
   
@@ -8137,7 +8208,7 @@ for(sn in scenNames){
   #### 13cs - manure management ####
   cat("            calculating manure emissions ...\n")
   # load in manure management - a per-animal emission value - it is a value for 6 months (indoors)
-  manMgmt <- fread(file.path(resultsPath, "animals", "sixMonthMMCO2e.csv")
+  manMgmt <- fread(file.path("results", "animals", "sixMonthMMCO2e.csv")
                    , showProgress = FALSE)
   head(manMgmt)
   
@@ -8157,7 +8228,7 @@ for(sn in scenNames){
   #### 13ds - animal excretions ####
   cat("               calculating animal excretions ...\n")
   # load in animal excretions - a per-animal emission value
-  excrete <- fread(file.path(resultsPath, "animals", "annual_grazing_emissions.csv")
+  excrete <- fread(file.path("results", "animals", "annual_grazing_emissions.csv")
                    , showProgress = FALSE)
   head(excrete)
   
@@ -8345,6 +8416,8 @@ for(sn in scenNames){
                  ,  max(rasterDf2$total_Tco2e, na.rm = T))
       , na.value="white"
     ) +
+    theme_void() +
+    coord_equal() +
     labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
     theme(legend.text = element_text(size = 8))
   
@@ -8354,123 +8427,109 @@ for(sn in scenNames){
   print(gg)
   dev.off()
   
-  png(paste0("images/ghg_balance2_", sn, ".png")
-      , res = 200
-      , width = 900, height = 1200)
-  print(gg)
-  dev.off()
-  
-  #### 13ms - replace entFerm emissions with UK-specific equations
-  # load in enteric fermentation - a per-animal emission value (uk-specific equation)
-  entFermUK <- fread(file.path(resultsPath, "animals", "entericFerm_uk_CH4CO2e.csv"))
-  head(entFermUK)
-  
-  # run through the transposing multiplication function
-  totalEntFermUK <- regionsTranspose(griddf = gridAnimals.scenario
-                                     , rSel = entFermUK
-                                     , finalCol = "kgCO2e_uk_entferm"
-                                     , colofInterest = "co2e_kg_year")
-  head(totalEntFermUK)
-  class(totalEntFermUK)
-  
-  head(ghgGridResultsSum)
-  ghgGridResultsSum.uk <- ghgGridResultsSum %>%
-    dplyr::select(-c(kgCO2e_entferm, total_kgco2e: total_Tco2e_inv)) %>%
-    # add uk Enteric fermentation in
-    merge(totalEntFermUK %>%
-            dplyr::select(rcFid_1km, kgCO2e_uk_entferm))
-  head(ghgGridResultsSum.uk)
-  ## total calculation
-  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_manMgmt:kgCO2e_uk_entferm)))) %>%
-    # convert to tonnes
-    mutate(total_Tco2e = total_kgco2e / 1000) 
-  head(ghgGridResultsSum.uk)
+  # #### 13ms - replace entFerm emissions with UK-specific equations
+  # # load in enteric fermentation - a per-animal emission value (uk-specific equation)
+  # entFermUK <- fread(file.path(resultsPath, "animals", "entericFerm_uk_CH4CO2e.csv"))
+  # head(entFermUK)
+  # 
+  # # run through the transposing multiplication function
+  # totalEntFermUK <- regionsTranspose(griddf = gridAnimals.scenario
+  #                                    , rSel = entFermUK
+  #                                    , finalCol = "kgCO2e_uk_entferm"
+  #                                    , colofInterest = "co2e_kg_year")
+  # head(totalEntFermUK)
+  # class(totalEntFermUK)
+  # 
+  # head(ghgGridResultsSum)
+  # ghgGridResultsSum.uk <- ghgGridResultsSum %>%
+  #   dplyr::select(-c(kgCO2e_entferm, total_kgco2e: total_Tco2e_inv)) %>%
+  #   # add uk Enteric fermentation in
+  #   merge(totalEntFermUK %>%
+  #           dplyr::select(rcFid_1km, kgCO2e_uk_entferm))
+  # head(ghgGridResultsSum.uk)
+  # ## total calculation
+  # ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+  #   mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_manMgmt:kgCO2e_uk_entferm)))) %>%
+  #   # convert to tonnes
+  #   mutate(total_Tco2e = total_kgco2e / 1000) 
+  # head(ghgGridResultsSum.uk)
+  # # str(ghgGridResultsSum.uk)
+  # # max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T)
+  # ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+  #   merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
+  # head(ghgGridResultsSum.uk)
+  # # str(ghgGridResultsSum.uk)
+  # 
+  # ### create the inverse
+  # ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+  #   mutate(total_Tco2e_inv = total_Tco2e * -1) %>%
+  #   relocate(rcFid_1km:total_Tco2e, total_Tco2e_inv)
+  # head(ghgGridResultsSum.uk)
   # str(ghgGridResultsSum.uk)
-  # max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T)
-  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
-  head(ghgGridResultsSum.uk)
-  # str(ghgGridResultsSum.uk)
-  
-  ### create the inverse
-  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    mutate(total_Tco2e_inv = total_Tco2e * -1) %>%
-    relocate(rcFid_1km:total_Tco2e, total_Tco2e_inv)
-  head(ghgGridResultsSum.uk)
-  str(ghgGridResultsSum.uk)
-  
-  ### write
-  st_write(ghgGridResultsSum.uk
-           , file.path("scenario", "final_results"
-                       , paste0(sn, "_final_emissions_CO2e_uk.gpkg"))
-           , append = F)
-  fwrite(st_drop_geometry(ghgGridResultsSpat)
-         , file.path("scenario", "final_results"
-                     , paste0(sn, "_final_emissions_CO2e_uk.csv"))
-         , row.names = F)
-  
-  which(ghgGridResultsSum.uk$total_Tco2e == max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T))
-  ghgGridResultsSum.uk[197730, ]
-  
-  # make spatial (raster data)
-  vpRast <- st_rasterize(ghgGridResultsSum.uk %>% dplyr::select(total_Tco2e_inv, geometry))
-  plot(vpRast)
-  empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
-  vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
-  crs(vpRast) <- "epsg:27700"
-  # save raster
-  writeRaster(vpRast
-              , file.path("scenario", "final_results"
-                          , paste0(sn, "_fin_emisUK_CO2e_inv.tif"))
-              , overwrite = T)
-  
-  rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
-                           , dx = 1000, dy = 1000
-                           , crs = 27700)
-  plot(rasterDf)
-  write_stars(rasterDf
-              , file.path("scenario", "final_results"
-                          , paste0(sn, "_ghgfin_emisUK_CO2e.tif"))
-  )
-  
-  ### plot results
-  # set colour ramp
-  rasterDf2 <- rasterDf %>%
-    as.data.frame(xy = T)
-  head(rasterDf2)
-  
-  max(rasterDf2$total_Tco2e, na.rm = T)
-  
-  breaks <- seq(-1000, 1000, 250)
-  colors <- c("#40B0A6", "white", "orange1", "#E66100")
-  
-  gg <- ggplot() + 
-    geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
-    scale_fill_gradientn(
-      colors = c("#40B0A6","white","#E66100"),
-      values = scales::rescale(c(-500, 0 , 500)),
-      limits = c(min(rasterDf2$total_Tco2e, na.rm = T)
-                  ,  max(rasterDf2$total_Tco2e, na.rm = T))
-      , na.value="white"
-    ) +
-    labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
-    theme(legend.text = element_text(size = 8))
-  
-  png(paste0("images/ghg_balance_uk_", sn, ".png")
-      , res = 200
-      , width = 1000, height = 1200)
-  print(gg)
-  dev.off()
-  
-  png(paste0("images/ghg_balance2_uk_", sn, ".png")
-      , res = 200
-      , width = 900, height = 1200)
-  print(gg)
-  dev.off()
-  
+  # 
+  # ### write
+  # st_write(ghgGridResultsSum.uk
+  #          , file.path("scenario", "final_results"
+  #                      , paste0(sn, "_final_emissions_CO2e_uk.gpkg"))
+  #          , append = F)
+  # fwrite(st_drop_geometry(ghgGridResultsSpat)
+  #        , file.path("scenario", "final_results"
+  #                    , paste0(sn, "_final_emissions_CO2e_uk.csv"))
+  #        , row.names = F)
+  # 
+  # which(ghgGridResultsSum.uk$total_Tco2e == max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T))
+  # ghgGridResultsSum.uk[197730, ]
+  # 
+  # # make spatial (raster data)
+  # vpRast <- st_rasterize(ghgGridResultsSum.uk %>% dplyr::select(total_Tco2e_inv, geometry))
+  # plot(vpRast)
+  # empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
+  # vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
+  # crs(vpRast) <- "epsg:27700"
+  # # save raster
+  # writeRaster(vpRast
+  #             , file.path("scenario", "final_results"
+  #                         , paste0(sn, "_fin_emisUK_CO2e_inv.tif"))
+  #             , overwrite = T)
+  # 
+  # rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
+  #                          , dx = 1000, dy = 1000
+  #                          , crs = 27700)
+  # plot(rasterDf)
+  # write_stars(rasterDf
+  #             , file.path("scenario", "final_results"
+  #                         , paste0(sn, "_ghgfin_emisUK_CO2e.tif"))
+  # )
+  # 
+  # ### plot results
+  # # set colour ramp
+  # rasterDf2 <- rasterDf %>%
+  #   as.data.frame(xy = T)
+  # head(rasterDf2)
+  # 
+  # max(rasterDf2$total_Tco2e, na.rm = T)
+  # 
+  # breaks <- seq(-1000, 1000, 250)
+  # colors <- c("#40B0A6", "white", "orange1", "#E66100")
+  # 
+  # gg <- ggplot() + 
+  #   geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
+  #   scale_fill_gradientn(
+  #     colors = c("#40B0A6","white","#E66100"),
+  #     values = scales::rescale(c(-500, 0 , 500)),
+  #     limits = c(min(rasterDf2$total_Tco2e, na.rm = T)
+  #                ,  max(rasterDf2$total_Tco2e, na.rm = T))
+  #     , na.value="white"
+  #   ) +
+  #   labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
+  #   theme(legend.text = element_text(size = 8))
+  # 
+  # png(paste0("images/ghg_balance_uk_", sn, ".png")
+  #     , res = 200
+  #     , width = 1000, height = 1200)
+  # print(gg)
+  # dev.off()
+
   cat("##############################################\n\n")
   # stop("summed")
 }
-
-
