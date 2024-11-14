@@ -15,14 +15,11 @@
 ## Run before: total_ghg_script.R
 ##
 ## Specific numbered tasks:
-## 1 - 
-## 2 - 
-## 3 - 
-## 4 - 
+## 1 - Get Scotland and Wales boundaries
+## 2 - Convert the georeferenced spatial files to animal numbers matching 2020 data
 ##
 ## list of final outputs:
-##    
-##    
+##    nonBov1kmSW.gpkg <- contains the final non-bovine animal numbers for Scotland and Wales
 ##
 ## Author: Dr. Paul M. Evans
 ##
@@ -64,6 +61,8 @@ rm(list.of.packages, new.packages, package.i)
 #### 0 - paths ####
 # scotland and wales boundaries
 swPath <- "C:/Users/paueva/OneDrive - UKCEH/Data/uk/boundary"
+walesPath <- "N:/Data/UK/Boundary/wales/Wales_Ward_Boundaries_hwm/Wales_Ward_Boundaries_hwm.shp"
+scotPath <- "N:/Data/UK/Boundary/Counties/Data/Supplementary_Ceremonial/Boundary-line-ceremonial-counties_region.shp"
 # animal path
 animalPath <- "C:/Users/paueva/Documents/ArcGIS/Projects/agland2"
 # animal path
@@ -96,7 +95,7 @@ scotMin <- st_bbox(sw[[1]])[[2]]
 
 # get smaller region of...
 ## wales
-walesRegions <- st_read("N:/Data/UK/Boundary/wales/Wales_Ward_Boundaries_hwm/Wales_Ward_Boundaries_hwm.shp") %>%
+walesRegions <- st_read(walesPath) %>%
   st_transform(27700)
 head(walesRegions)
 ### group by 'FILE_NAME'
@@ -111,7 +110,7 @@ walesReg2 <- walesReg2 %>%
                                , "broad_region", "???"))
 
 ## Scotland
-scotRegions <- st_read("N:/Data/UK/Boundary/Counties/Data/Supplementary_Ceremonial/Boundary-line-ceremonial-counties_region.shp")  %>%
+scotRegions <- st_read(scotPath)  %>%
   st_transform(27700)
 head(scotRegions)
 ### get only scottish counties
@@ -140,6 +139,7 @@ pigs.ymax <- as.data.frame(matrix(unlist(lapply(st_geometry(pigs.in), st_bbox))
   mutate(sw = ifelse(.[[1]] < scotMin, "Wales", "Scot"))
 pigs.in <- bind_cols(pigs_per_km = pigs.in %>% dplyr::select(pigs_km)
                      , sw = pigs.ymax$sw) %>% rename(pigs_per_km = 1)
+plot(pigs.in[1])
 
 # sheep
 sheep.in <- st_read(file.path(animalPath, "sheep.shp")) %>% st_transform(27700)
@@ -260,6 +260,7 @@ stopifnot(length(union.list) == 6)
 ## for each, load and assign the correct final value, and tidy up the df
 i.list <- list(); fin.list <- list()
 for(i in 1:length(union.list)){
+  cat("Current i:", i, "\n")
   x <- union.list[[i]]
   xAn <- gsub("^(.+)_s.*|_w.*", "\\1", basename(x))
   xAn <- gsub("fix_", "", xAn)
@@ -414,7 +415,7 @@ for(i in 1:length(union.list)){
 
 ## ------------ Notes --------------  ##
 ## 'anmials_area.csv' is saved below to determine the non-bovines animals per grid
-## square. The calculation were done in the 'anmials_area.xlsx', and then loaded 
+## square. The calculations were done in the 'anmials_area.xlsx', and then loaded 
 ## back in as the number below.
 ## ------------ ----- --------------  ##
 
@@ -448,6 +449,8 @@ stopifnot(length(final.list) == 6)
 
 nonBov1km.list <- list()
 for(i in 1:length(final.list)){
+  
+  cat("Current i:", i, ("(in 454 section)"), "\n")
   
   xIn <- final.list[[i]]
   print(xIn)
@@ -558,9 +561,10 @@ for(i in 1:length(final.list)){
   st_crs(nonBovPoint)
   # intersect
   nonBovIntersect <- st_intersection(ghgGrid, nonBovPoint)
+  head(nonBovIntersect)
   plot(nonBovIntersect[2])
   nonBovIntersect <- nonBovIntersect %>% st_drop_geometry() %>% 
-    dplyr::select(rcFid_1km, total_adj_km, county) %>%
+    dplyr::select(rcFid_1km, total_adj_km) %>%
     filter(!is.na(rcFid_1km))
   sum(nonBovIntersect$total_adj)
   
