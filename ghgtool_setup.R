@@ -4,14 +4,14 @@
 ##
 ## Purpose of script: setup the directory architecture for the ghg tool, 
 ##                    with a specific focus on the outputs. Also, populate
-##                    the data_in directory
+##                    the 'data_in' directory
 ##
 ## Run before: all other ghg scripts
 ##             ghg_tables_create.R 
 ##
 ## Specific numbered tasks:
 ## 1 - create directories
-## 2 - populate data_in directory
+## 2 - populate 'data_in' directory
 ## 3 - create project packages folder (proj_packages.R)
 ##
 ## Author: Dr. Paul M. Evans
@@ -33,12 +33,29 @@ options(scipen = 6, digits = 4) # for non-scientific notation
 # remove objects
 rm(list = ls())
 
-# #### 0 - local or not ####
+#### 0 - local or not ####
 local <- T
 if(local){
   localPath <- getwd()
 }
 rm(local)
+
+#### 0 - paths to data to be copied in ####
+# 1 km resolution land cover
+landCoverPath <- "N:\\Data\\UK\\Land_cover\\LCM2015/Targets21/lcm2015_gb_1km_dominant_target_class.img"
+# 25 m resolution land cover
+landCover25 <- "N:\\Data\\UK\\Land_cover\\LCM2015\\Targets21/LCM2015_25/LCM2015_GB.tif"
+# 25 m resolution land cover 2019
+land2019Cover25 <- "N:/Data/UK/Land_cover/LCM2019/data/gb2019lcm25m.tif"
+# crop map 2015
+crop2015map <- "N:\\Data\\UK\\Land_cover/LCMPlusCrops/LCM2015Pluscrops/LCM2015PlusCrops.tif"
+# agcensus - numeric
+agcensusPath <- "N:\\Data\\UK\\agcensus/"
+# agcensus - names
+agcensusNames <- "N:\\Data\\UK\\agcensus/England_2010_5k.csv"
+# cts data - beef
+ctsBeefPath <- "N:/Data/UK/CTS/BEEF_2020.csv"
+ctsDairyPath <- "N:/Data/UK/CTS/DAIRY_2020.csv"
 
 #### 0 - which parts to run? ####
 ## ------------ Notes --------------  ##
@@ -101,7 +118,7 @@ if(part2){
   #### 2a - grid ####
   tic("creating grid")
   ## ------------ Notes --------------  ##
-  ## A grid can be created from the a replicate raser grid based on the initial 
+  ## A grid can be created from the a replicate raster grid based on the initial 
   ## archetype data grid, which was 1 km.
   ## This will set the basis for all future calculations.
   ## ------------ ----- --------------  ##
@@ -196,39 +213,39 @@ if(part3){
   tic("loaded land cover")
   
   # copy the 1 km resolution land cover
-  file.copy("N:\\Data\\UK\\Land_cover\\LCM2015/Targets21/lcm2015_gb_1km_dominant_target_class.img"
+  file.copy(landCoverPath
             , "data_in/land_cover/")
   # copy the 25 m resolution land cover 2015
-  file.copy("N:\\Data\\UK\\Land_cover\\LCM2015\\Targets21/LCM2015_25/LCM2015_GB.tif"
+  file.copy(landCover25
             , "data_in/land_cover/")
   # copy the 25 m resolution land cover 2019 - this is for animal calculations
-  file.copy("N:/Data/UK/Land_cover/LCM2019/data/gb2019lcm25m.tif"
+  file.copy(land2019Cover25
             , "data_in/land_cover/")
   toc()
   
   #### 3b - Crops ####
   cat("copyng crops...\n")
-  file.copy("N:\\Data\\UK\\Land_cover/LCMPlusCrops/LCM2015Pluscrops/LCM2015PlusCrops.tif"
+  file.copy(crop2015map
             , "data_in/land_cover/")
   
   #### 3c - animals ####
   # agcensus - numeric
-  agList <- list.files("N:\\Data\\UK\\agcensus/", pattern = "agcensus_5km"
+  agList <- list.files(agcensusPath, pattern = "agcensus_5km"
                        , full.names = T)
   lapply(agList, file.copy, "data_in/animals/")
   
   cat("copyng animals...\n")
   # agcensus - names
-  file.copy("N:\\Data\\UK\\agcensus/England_2010_5k.csv"
+  file.copy(agcensusNames
             , "data_in/animals/")
   
   # cts data
   cat("copyng CTS...\n")
-  file.copy("N:/Data/UK/CTS/BEEF_2020.csv"
+  file.copy(ctsBeefPath
             , "data_in/animals/")
-  file.copy("N:/Data/UK/CTS/DAIRY_2020.csv"
+  file.copy(ctsDairyPath
             , "data_in/animals/")
-  }
+}
 
 if(part4){
   #### 4 - create project packages folder (proj_packages.R) ####
