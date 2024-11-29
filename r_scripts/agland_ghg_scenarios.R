@@ -238,7 +238,7 @@ if(runScenMapCreate){
     lcmDiff.change <- lcmDiff %>%
       mutate(different = ifelse(lcm2007 != lcm2015, 1, 0))
     table(lcmDiff.change$different)
-    51133/190604
+    
     ## convert to point data
     lcmDiff.point <- lcmDiff.change %>%
       st_as_sf(coords = c("x", "y"),
@@ -249,95 +249,90 @@ if(runScenMapCreate){
     # determine which region each belongs to
     regions <- st_read("N:/Data/UK/Boundary/uk/eng_wales_scot.gpkg")
     
-    ## extract region to point data
-    lcmDiff.region <- lcmDiff.point %>%
-      ## intersect polygons with points, keeping the information from both
-      st_intersection(regions, .)
+    if(file.exists("lcmDiff_region.gpkg")){
+      lcmDiff.region <- st_read("lcmDiff_region.gpkg")
+    } else {
+      ## extract region to point data
+      lcmDiff.region <- lcmDiff.point %>%
+        ## intersect polygons with points, keeping the information from both
+        st_intersection(regions, .)
+      st_write(lcmDiff.region, "lcmDiff_region.gpkg", append = F)
+      # lcmDiff.region <- st_read("lcmDiff_region.gpkg")
+    }
     head(lcmDiff.region)
-    st_write(lcmDiff.region, "lcmDiff_region.gpkg", append = F)
-    # lcmDiff.region <- st_read("lcmDiff_region.gpkg")
     
     ## ------------ Notes --------------  ##
     ## below, the finals of all animals, crops, etc. from the data inputs
-    ## calculated in 'total_ghg_script.R' will be loaded in. Then, where the 
-    ## dominant land type in 2007 does not match that in 2015, averages can 
-    ## be used, and alterations made
+    ## calculated in 'total_ghg_script.R' will be loaded in. Then, regional averages can 
+    ## be used, and alterations made. 
     ## ------------ ----- --------------  ##
     
-    ### load animals
+    # Load animals and crops data
     tghg.animals <- st_read("data_in/animals/all_animals_1km.gpkg")
-    sort(names(tghg.animals))
-    t(table(tghg.animals$rcFid_1km)) %>% as.data.frame() %>%
-      filter(Freq > 1)
-    ### load crops (and all land covers)
     tghg.crops <- st_read("data_in/land_cover/land_cover_table.gpkg")
-    #### combine, using rcFid_1km
+    
+    # Combine animals and crops data using rcFid_1km
     tghg.ac <- tghg.animals %>%
-      merge(., tghg.crops %>% st_drop_geometry()
-            , by = "rcFid_1km") 
+      left_join(st_drop_geometry(tghg.crops), by = "rcFid_1km")
     
-    tic("extraction to centroids")
-    # get centroid, in order to be able to extract finer region
-    tghg.centroid <- st_centroid(tghg.ac)
-    names(tghg.centroid)
-    ## extract region to point data
-    tghg.region <- tghg.centroid %>%
-      ## intersect polygons with points, keeping the information from both
-      st_intersection(regions, .)
-    toc()
-    head(tghg.region)
-    sort(names(tghg.region))
+    # Load or create region data
+    tghg.region <- if(file.exists("scenario/tghg_region.gpkg")) {
+      st_read("scenario/tghg_region.gpkg")
+    } else {
+      tic("extraction to centroids")
+      tghg.region <- tghg.ac %>%
+        st_centroid() %>%
+        st_intersection(regions, .)
+      toc()
+      st_write(tghg.region, "scenario/tghg_region.gpkg", append = FALSE)
+      tghg.region
+    }
     
-    # save them all
-    st_write(tghg.animals, "scenario/tghg_animals.gpkg", append = F)
-    st_write(tghg.ac, "scenario/tghg_ac.gpkg", append = F)
-    st_write(tghg.crops, "scenario/tghg_crops.gpkg", append = F)
-    st_write(tghg.region, "scenario/tghg_region.gpkg", append = F)
-    # tghg.region <- st_read("scenario/tghg_region.gpkg")
-    # tghg.ac <- st_read("scenario/tghg_ac.gpkg")
+    # Save data to disk
+    st_write(tghg.animals, "scenario/tghg_animals.gpkg", append = FALSE)
+    st_write(tghg.ac, "scenario/tghg_ac.gpkg", append = FALSE)
+    st_write(tghg.crops, "scenario/tghg_crops.gpkg", append = FALSE)
+    st_write(tghg.region, "scenario/tghg_region.gpkg", append = FALSE)
     
-    ### merge regions with animal and crop numbers
-    tghg.ac2 <- tghg.ac %>% st_drop_geometry() %>%
-      merge(., tghg.region %>% dplyr::select(Name, Area_Description, rcFid_1km) %>% st_drop_geometry()
-            , by = "rcFid_1km"
-            , all = F) %>%
+    # Merge regions with animal and crop numbers
+    tghg.ac2 <- tghg.ac %>%
+      left_join(st_drop_geometry(tghg.region) %>%
+                  select(Name, Area_Description, rcFid_1km),
+                by = "rcFid_1km") %>%
       relocate(rcFid_1km, Name, Area_Description) %>%
-      # remove duplicate rows
       distinct()
-    # st_write(tghg.ac2, "ac2.gpkg", append = T)
-    # tghg.ac2 <- st_read("ac2.gpkg")
-    ### make spatial
-    tghg.ac3 <- tghg.ac2 %>%
-      merge(tghg.ac %>%
-              dplyr::select(rcFid_1km), .
-            , by = "rcFid_1km")
-    names(tghg.ac3)
-    st_write(tghg.ac3, "ac3.gpkg", append = T)
     
-    # merge with the ones that are the same between 2007 and 2015 and those that are not
+    # Load or create spatial data
+    tghg.ac3 <- if(file.exists("ac3.gpkg")) {
+      st_read("ac3.gpkg")
+    } else {
+      tghg.ac3 <- tghg.ac %>%
+        select(rcFid_1km) %>%
+        left_join(tghg.ac2, by = "rcFid_1km")
+      st_write(tghg.ac3, "ac3.gpkg", append = FALSE)
+      tghg.ac3
+    }
+    
+    # Extract region to point data
     tic("extraction to centroids - region and change")
-    ## extract region to point data
-    tghg.ac4 <- lcmDiff.region %>% dplyr::select(-c(Name, Area_Description)) %>%
-      ## intersect polygons with points, keeping the information from both
-      st_intersection(tghg.ac3, .) %>%
+    tghg.ac4 <- st_intersection(lcmDiff.region %>% dplyr::select(-c(Name, Area_Description)),
+                                tghg.ac3) %>%
       relocate(c(lcm2007, lcm2015, different), .after = rcFid_1km) %>%
       dplyr::select(-Area_Description)
     toc()
-    names(tghg.ac4)
     
-    # get averages of all animals and crops per region per land type
+    # Summarize animals and crops by region and land type
     tghg.summarise <- tghg.ac4 %>%
-      # remove unneeded columns for summary
       dplyr::select(-c(rcFid_1km, lcm2007, different)) %>%
       st_drop_geometry() %>%
       group_by(lcm2015, Name) %>%
+      summarise(across(everything(), mean)) %>%
       mutate(n = n()) %>%
-      relocate(lcm2015, Name, n) %>%
-      summarise(across(everything(), ~mean(.)))
+      relocate(lcm2015, Name, n)
     head(tghg.summarise)
-    fwrite(tghg.summarise, "scenario/tghg_summarise.csv", row.names = F)
-    tghg.summarise <- fread("scenario/tghg_summarise.csv")
-    names(tghg.summarise)
+    
+    # Save summary data
+    fwrite(tghg.summarise, "scenario/tghg_summarise.csv", row.names = FALSE)
     
     # create the 2007 dataframe based on averages for the region / land cover type
     
@@ -402,10 +397,25 @@ Native projection: 27700")
     sink(file = NULL)
   }
   
+  ##### calculate differences between 2015 and 2007 #####
+  # read in 2007
+  check2007 <- st_read(file.path("scenario", "scen_maps"
+                         , "baseline2007.gpkg"))
+  ## check land cover equal 100 ha (i.e., 100% area) [Sum columns ending with '_ha']
+  landCheck <- check2007 %>%
+    mutate(sum_ha = rowSums(across(ends_with('_ha')), na.rm = TRUE))
+  hist(landCheck$sum_ha, breaks = 100)
+  
+  check2015 <- st_read("scenario/tghg_ac.gpkg")
+  landCheck <- check2015 %>%
+    mutate(sum_ha = rowSums(across(ends_with('_ha')), na.rm = TRUE))
+  hist(landCheck$sum_ha, breaks = 100)
+  
   #### 2 - create maps for the new scenarios ####
   ## ------------ Notes --------------  ##
   ## The new maps produced here will be based on four of the scenarios from Redhead et al. (2020)
-  ## The scenarios are a 15 and 30 per cent increase in agricultural expansion, and 15 and 30 per cent grassland restoration
+  ## The scenarios are a 15 and 30 per cent increase in agricultural expansion, 
+  ## and 15 and 30 per cent grassland restoration.
   ## Here, first, the land covers for the different scenarios will be derived
   ## second, the land cover will be used to determine the animal and crop numbers per 1 km2
   ## ------------ ----- --------------  ##
@@ -512,35 +522,44 @@ Native projection: 27700")
   dfs2007 <- list.files(file.path("scenario", "scen_maps")
                         , pattern = ".gpkg$"
                         , full.names = T)
+  # add the original 2015 map
+  dfs2007 <- c(dfs2007, "scenario/tghg_ac.gpkg")
+  
   cat(dfs2007, sep = "\n")
-  stopifnot(length(dfs2007) == 5)
+  stopifnot(length(dfs2007) == 6)
   
   # for each scenario, determine totals of a few variables (animals and land cover)
   dfs2007.amounts <- pblapply(dfs2007, function(i){
-  
+    
     print(i)
     
     # get name
     i.name <- gsub("^(.+)\\.gp.*", "\\1", basename(i))
-    
     i.vect <- st_read(i, quiet = T)
+    ## check land cover equal 100 ha (i.e., 100% area) [Sum columns ending with '_ha']
+    landCheck <- i.vect %>%
+      mutate(sum_ha = rowSums(across(ends_with('_ha')), na.rm = TRUE))
+    print(hist(landCheck$sum_ha, breaks = 100))
+    
     i.apply <- apply(i.vect %>% as.data.frame() %>%
                        dplyr::select(5:(last_col()-1)) %>%
                        mutate_all(~ ifelse(is.na(.), 0, .))
-                       , 2, mean) %>%
+                     , 2, mean) %>%
       as.data.frame() 
     i.apply <- tibble::rownames_to_column(i.apply, "Name")
     names(i.apply)[2] <- i.name
     return(i.apply)
   }) %>% purrr::reduce(left_join, by = "Name")
   sort(dfs2007.amounts$Name)
-
+  
   # select only a few rows for illustration
   dfs2007.select <- dfs2007.amounts %>%
-    filter(Name %in% c("Medium.dairy_Dairy.cows", "poultry_per_km", "Continental_60...240.months_Beef.cows"
+    filter(Name %in% c("Medium.dairy_Dairy.cows"
+                       , "poultry_per_km", "Continental_60...240.months_Beef.cows"
                        , "conifer_ha", "broadleaf_ha", "calc_grass_ha"
                        , "improved_grass_ha", "winterwheat_ha")) %>%
     relocate(Name, Ag_30)
+  dfs2007.select
   
   # write readme
   sink(file = NULL)
@@ -576,805 +595,3 @@ Native projection: 27700")
   sink(file = NULL)
 } # end 'runScenMapCreate'
 rm(runScenMapCreate)
-
-#### 3 - run the GHG model on the new scenarios (and baseline for 2007) ####
-## ------------ Notes --------------  ##
-## below follows the exact calculations from the main ghg script 'total_ghg_script.R',
-## with only some alterations for reading in different sources (i.e. scenarios)
-## It starts from part 4 of that script
-## ------------ ----- --------------  ##
-
-# read in initial grid
-rcFid.grid <- st_read("data_in/ghgGridGB.gpkg")
-rcFid.grid
-
-# list all final files that will be assessed
-mapsToEval.list <- list.files(file.path("scenario", "scen_maps")
-                              , full.names = T
-                              , pattern = ".gpkg")
-
-# get rcFids to match regions (from original analysis)
-## load in original regions
-regions.broad <- fread("data_in/regions_assigned.csv") %>% as.data.frame() %>%
-  distinct()
-
-##### 3.0 - set-ups for analysis #####
-###### 3.0a - set-up for animal-based emissions ######
-# set-up for part 4 in original model - enteric fermentation
-## read in MJ per day table
-GEtableOut <- fread(file.path("results", "animals", "mjDayGE.csv"))
-# load in table with Net Energy amounts per animal category
-netEnergyTable <- fread(file.path("data_in", "animals", "animal_coefs_net_energy.csv")) %>%
-  as.data.frame()
-head(netEnergyTable)
-
-for(de in c(65, 70, 75, 80, 85)){
-  print(de)
-  # extract just those columns from GEtableOut
-  GEDE <- GEtableOut %>%
-    dplyr::select(contains(paste0("_",de)))
-  # derive appropriate Ym
-  Ym <- 9.75 - 0.05 * de
-  print(Ym)
-  Ym100 <- Ym/100
-  # calculate GE * Ym * 365
-  kgCH4GE <- (GEDE * Ym100 * 365)/55.65
-  # convert to CO2e
-  kgCO2GE <- kgCH4GE * 25
-  
-  if(de == 65){
-    DEtable2 <- as.data.frame(cbind(animal = netEnergyTable$animal
-                                    , category = netEnergyTable$category
-                                    , UK.Region = netEnergyTable$UK.Region
-                                    , kgCH4GE = kgCH4GE))
-    # save CO2 version
-    DEtableCO2 <- as.data.frame(cbind(animal = netEnergyTable$animal
-                                      , category = netEnergyTable$category
-                                      , UK.Region = netEnergyTable$UK.Region
-                                      , kgCO2GE = kgCO2GE))
-  } else {
-    DEtable2 <- cbind(DEtable2
-                      , kgCH4GE = kgCH4GE)
-    # save CO2 version
-    DEtableCO2 <- cbind(DEtableCO2
-                        , kgCO2GE = kgCO2GE)
-  }
-}
-head(DEtable2)
-head(DEtableCO2)
-
-# use the scenario of DEinside = 85 DE and DEoutside = 65 DE to give a per-animal enteric fermentation emission
-CH4EntFerm <- DEtable2 %>%
-  dplyr::select(animal, category, UK.Region, kgCH4GE.MJdayGEsml_65, kgCH4GE.MJdayGEhoused_85) %>%
-  rowwise() %>%
-  mutate(kgCH4yr.50pcScen = ifelse(grepl("lamb", category), kgCH4GE.MJdayGEhoused_85
-                                   , (kgCH4GE.MJdayGEsml_65/2) + (kgCH4GE.MJdayGEhoused_85/2))) %>%
-  # convert to CO2e
-  mutate(kgCO2.50pcScen = kgCH4yr.50pcScen * 25)
-head(CH4EntFerm)
-
-###### 3.0b - set-up for fertiliser emissions ######
-# set-up for part 7 in original model - fertiliser use
-# load in soils data
-soils <- st_read(file.path("data_in", "crops", "soils.gpkg"))
-head(soils)
-
-## ------------ Notes --------------  ##
-## From RB209: 'For each field, the amount of lime to apply will depend on the current soil pH,
-## soil texture, soil organic matter and the target pH, which should be 0.2 pH points above optimum'
-## Therefore, Table 1.2 in RB209 was used to determine how much lime would be applied
-## ------------ ----- --------------  ##
-
-# calculate lime requirements, in t/ha, for arable and arable
-## for sand
-limeReqsSand <- soils %>%
-  filter(soilTyp == "Sand") %>%
-  # calculate based on starting pH
-  mutate(limeReq_tha_arab = if_else(Soil_TopsoilPH_1k <= 5, 10
-                                    , if_else(Soil_TopsoilPH_1k <= 5.5, 7
-                                              , if_else(Soil_TopsoilPH_1k <= 6.0, 4
-                                                        , if_else(Soil_TopsoilPH_1k <= 6.2, 3, 0))))
-         , limeReq_tha_gras = if_else(Soil_TopsoilPH_1k <= 5, 5
-                                      , if_else(Soil_TopsoilPH_1k <= 5.5, 3
-                                                , if_else(Soil_TopsoilPH_1k <= 6.0, 0
-                                                          , if_else(Soil_TopsoilPH_1k <= 6.2, 0, 0)))))
-
-# for silt
-limeReqsSilt <- soils %>%
-  filter(soilTyp == "Silt") %>%
-  # calculate based on starting pH
-  mutate(limeReq_tha_arab = if_else(Soil_TopsoilPH_1k <= 5, 12
-                                    , if_else(Soil_TopsoilPH_1k <= 5.5, 8
-                                              , if_else(Soil_TopsoilPH_1k <= 6.0, 5
-                                                        , if_else(Soil_TopsoilPH_1k <= 6.2, 4, 0))))
-         , limeReq_tha_gras = if_else(Soil_TopsoilPH_1k <= 5, 6
-                                      , if_else(Soil_TopsoilPH_1k <= 5.5, 4
-                                                , if_else(Soil_TopsoilPH_1k <= 6.0, 0
-                                                          , if_else(Soil_TopsoilPH_1k <= 6.2, 0, 0)))))
-# for clay
-limeReqsClay <- soils %>%
-  filter(soilTyp == "Clay") %>%
-  # calculate based on starting pH
-  mutate(limeReq_tha_arab = if_else(Soil_TopsoilPH_1k <= 5, 14
-                                    , if_else(Soil_TopsoilPH_1k <= 5.5, 10
-                                              , if_else(Soil_TopsoilPH_1k <= 6.0, 6
-                                                        , if_else(Soil_TopsoilPH_1k <= 6.2, 4, 0))))
-         , limeReq_tha_gras = if_else(Soil_TopsoilPH_1k <= 5, 7
-                                      , if_else(Soil_TopsoilPH_1k <= 5.5, 4
-                                                , if_else(Soil_TopsoilPH_1k <= 6.0, 0
-                                                          , if_else(Soil_TopsoilPH_1k <= 6.2, 0, 0)))))
-
-# combine - this shows tonnes of lime required per ha based on soil pH
-limeReqs <- rbind(limeReqsSand, limeReqsSilt, limeReqsClay)
-head(limeReqs)
-# tidy
-rm(limeReqsSand, limeReqsSilt, limeReqsClay)
-
-# create a rainfall grid from 2012 - 2017 precip data. Use the 'all_mean' data
-rainExtract <- raster("N:/Data/UK/chessmet/precipitation/year_sum_averageikm.tif") %>%
-  # convert to df
-  as.data.frame(xy=T) %>%
-  # using the info on Step 3 from RB209 (pg 9), put rain into three categories
-  mutate(rainCat = if_else(layer < 600, "low"
-                           , if_else(layer <= 700, "moderate"
-                                     , "high")))
-
-# separate centroid points of the soil data
-separatedSoils <- soils %>%
-  mutate(X = as.integer(unlist(map(soils$geom, 1))),
-         Y = as.integer(unlist(map(soils$geom, 2)))) %>%
-  dplyr::select(X, Y, soilTyp) %>%
-  # merge with rain
-  merge(., rainExtract %>% 
-          mutate(X = as.integer(x), Y = as.integer(y)) %>%
-          dplyr::select(X, Y, rainCat))
-
-## require root depth - data converted from EU scale
-rootDepthUK <- rast(file.path("data_in/crops", "rootdepthuk.tif")) %>%
-  # convert to df
-  as.data.frame(xy=T) %>%
-  # merge with rainfall data
-  merge(separatedSoils, .
-        , by.x = c("X", "Y")
-        , by.y = c("x", "y")
-        , all = F) %>%
-  # determine RB209 rooting depth category
-  mutate(depthRB209 = if_else(soilTyp %in% c("Sand", "Silt") & rootdepthuk > 100, "Deep"
-                              , if_else(soilTyp == "Clay" & rootdepthuk > 40, "Deep" 
-                                        , if_else(rootdepthuk < 40, "Shallow", "Medium"))))
-head(rootDepthUK)
-
-# read in and then replicate all cereals for the cereal types
-snsParameters <- fread(file.path("data_in", "crops", "snsTableCompleted.csv"))
-snsCereals <- snsParameters %>%
-  filter(crop_type == "cereal")
-# get nrow
-nrowCereal <- nrow(snsCereals)
-snsCereals <- do.call("rbind", replicate(5, snsCereals, simplify = FALSE))
-snsCereals$crop <- c(rep(c("maize"), nrowCereal)
-                     , rep(c("winterwheat"), nrowCereal)
-                     , rep(c("winterbarley"), nrowCereal)
-                     , rep(c("springwheat"), nrowCereal)
-                     , rep(c("springbarley"), nrowCereal)) 
-snsCereals <- snsCereals %>%
-  dplyr::select(-"crop_type") %>%
-  rename(crop_type = crop) %>%
-  relocate(threeParas, crop_type, sns_category)
-# add back to original
-snsParameters <- rbind(snsParameters %>%
-                         filter(crop_type != "cereal")
-                       , snsCereals)
-# read in table
-snsCropParameters <- fread(file.path("data_in", "crops", "snsCropTableCompleted.csv"))
-head(snsCropParameters)
-
-# make tables wide
-snsParasWide <- snsParameters %>%
-  tidyr::pivot_wider(names_from = crop_type, values_from = sns_category)
-colnames(snsParasWide)[2:ncol(snsParasWide)] <- paste0("sns_", colnames(snsParasWide)[2:ncol(snsParasWide)])
-head(snsParasWide)
-# sns parameters
-snsCropParametersWide <- snsCropParameters %>%
-  dplyr::select(-ref) %>%
-  tidyr::pivot_wider(names_from = crop_type, values_from = c(sns0, sns1, sns2, sns3)) %>%
-  rename_at(vars(-(1)), ~ paste0(., '_kgHa'))
-head(snsCropParametersWide)
-
-
-# for(i in 1:length(mapsToEval.list)){
-for(i in 1){
-  if(i == 1){
-    i.list <- list()
-  }
-  
-  cat("loading, and working with", mapsToEval.list[[i]], "\n")
-  
-  # read in polygons with animal and crop numbers
-  mapsToEval.in <- st_read(mapsToEval.list[[i]]) %>%
-    dplyr::select(-c(lcm2007, Name))
-  # get regions
-  length(which(mapsToEval.in$rcFid_1km %in% regions.broad$rcFid_1km))
-  length(which(!mapsToEval.in$rcFid_1km %in% regions.broad$rcFid_1km))
-  mapsToEval.in2 <- merge(mapsToEval.in, regions.broad, by = "rcFid_1km") %>%
-    mutate(region_broad = ifelse(grepl("Scotland|Wales|Highlands|Glasgow|Lothian", region), "other", region)) %>%
-    dplyr::select(-region)
-  
-  # add underscores to regions, to make them match output df
-  mapsToEval.in2$region_broad <- gsub(" ", "_", mapsToEval.in2$region_broad)
-  # and make London the same as South East
-  mapsToEval.in2$region_broad <- ifelse(mapsToEval.in2$region_broad == "London", "South_East"
-                                        , mapsToEval.in2$region_broad)
-  # convert the humber, to match 
-  mapsToEval.in2$region_broad <- ifelse(mapsToEval.in2$region_broad == "Yorkshire_and_The_Humber"
-                                        , "Yorkshire_and_the_Humber"
-                                        , mapsToEval.in2$region_broad)
-  
-  ## get all differ## get all different possible regions
-  ukRegionsPossible <- unique(mapsToEval.in2$region_broad)
-  
-  ##### 3a - enteric fermentation #####
-  # split by regions current region
-  x <- ukRegionsPossible[[2]]
-  regSplit <- pblapply(ukRegionsPossible, function(x){
-    cat(x, "| ")
-    currRegion <- x
-    # use region to extract from over all grid
-    regionGrid <- mapsToEval.in2 %>% st_drop_geometry() %>%
-      # remove land covers
-      dplyr::select(-contains("_ha")) %>%
-      filter(region_broad == currRegion)
-    head(regionGrid)
-    
-    # use the same information for the animal attributes grid, but add 'All' as well
-    regionSelect <- CH4EntFerm %>% 
-      filter(UK.Region %in% c(currRegion, "All"))
-    head(regionSelect)
-    
-    # ensure lengths match
-    stopifnot(identical(
-      ncol(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km)))
-      , nrow(regionSelect)
-    ))
-    
-    # ensure colnames of the spatial grid and row names of the amounts match
-    ## ensure that across and down are in the same positions,
-    ## otherwise change their positions
-    if(identical(
-      c(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km))))
-      , c(regionSelect$animal)
-    ))
-    {
-      regionalMix <- regionSelect
-      cat("all names match\n")
-      
-    } else {
-      
-      # see if any names are not present
-      wx <- colnames(regionGrid)[!which(colnames(regionGrid) %in% regionSelect$animal)]
-      stopifnot(length(wx) == 0)
-      
-      regionalMix <- regionSelect[match(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km)))
-                                        , regionSelect$animal), ]   
-      
-      # recheck - identical?
-      stopifnot(identical(
-        c(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km))))
-        , c(regionalMix$animal)
-      ))
-      cat("names match after reshuffle\n")
-    }
-    head(regionalMix)
-    
-    # multiply the animals in that region by their emissions
-    ## shorten regional animals emissions
-    regionalMix0 <- regionalMix %>% as.data.frame()
-    regionalMix0[is.na(regionalMix0)] <- 0
-    head(regionalMix0)
-    
-    # shorten the animal numbers
-    anr <- regionGrid %>%
-      dplyr::select(-c(rcFid_1km, region_broad)) %>%
-      st_drop_geometry()
-    names(anr)
-    
-    stopifnot(length(regionalMix0$animal[which(!regionalMix0$animal %in% names(anr))]) == 0)
-    
-    # get index of column of interest
-    coltoAnalyse <- which(names(regionalMix0) == "kgCO2.50pcScen")
-    # multiply for result
-    trya <- as.matrix(anr)
-    dim(trya)
-    dim(regionalMix0 %>%
-          dplyr::select(all_of(coltoAnalyse)) %>%
-          as.vector() %>%
-          unlist() %>%
-          as.data.frame())
-    finalCol <- "total" # set row total name
-    anrTimes <- as.matrix(anr) %*% diag(regionalMix0 %>%
-                                          dplyr::select(all_of(coltoAnalyse)) %>%
-                                          as.vector() %>%
-                                          unlist()) %>%
-      as.data.frame() %>%
-      mutate(!!finalCol := rowSums(.[], na.rm = T)) 
-    anrTimes[22005:22010, ]
-    anrTimes[91:95, ]
-    
-    # assign names back
-    names(anrTimes)[1:(ncol(anrTimes)-1)] <- c(names(regionGrid  %>%
-                                                       dplyr::select(-c(rcFid_1km, region_broad))))
-    head(anrTimes)
-    
-    # run some checks
-    stopifnot(anr[20, 20] * regionalMix0[20, "kgCO2.50pcScen"] == anrTimes[20, 20])
-    stopifnot(anr[100, 100] * regionalMix0[100, "kgCO2.50pcScen"] == anrTimes[100, 100])
-    stopifnot(anr[200, 200] * regionalMix0[200, "kgCO2.50pcScen"] == anrTimes[200, 200])
-    
-    anrTimes <- anrTimes %>%
-      # include id col back in
-      bind_cols(regionGrid %>% dplyr::select(rcFid_1km), .)
-    head(anrTimes)
-    return(anrTimes)
-  })
-  
-  # combine back together
-  anrTimesbind <- bind_rows(regSplit) %>%
-    merge(rcFid.grid, .
-          , by = "rcFid_1km")
-  str(anrTimesbind)
-  class(anrTimesbind)
-  
-  i.list[[i]] <- anrTimesbind
-  
-  st_write(anrTimesbind, file.path("scenario", "results"
-                                   , paste0("EntFer_", basename(mapsToEval.list[[i]])))
-           , append=TRUE)
-  
-  ##### 3b - manure management #####
-  # load in manure produced per animal per region
-  sixMonthMMCO2e <- fread(file.path("results", "animals", "sixMonthMMCO2e.csv")) %>%
-    as.data.frame()
-  analyseColumn <- "MMkgCO2e6MnIn"
-  
-  # split by regions current region
-  x <- ukRegionsPossible[[2]]
-  regSplit <- pblapply(ukRegionsPossible, function(x){
-    cat(x, "| ")
-    currRegion <- x
-    # use region to extract from over all grid
-    regionGrid <- mapsToEval.in2 %>% st_drop_geometry() %>%
-      # remove land covers
-      dplyr::select(-contains("_ha")) %>%
-      filter(region_broad == currRegion)
-    head(regionGrid)
-    table(colSums(regionGrid %>% dplyr::select(where(is.numeric)))) %>% as.data.frame()
-    
-    # use the same information for the animal attributes grid, but add 'All' as well
-    regionSelect <- sixMonthMMCO2e %>% 
-      filter(UK.Region %in% c(currRegion, "All"))
-    head(regionSelect)
-    
-    # ensure lengths match
-    stopifnot(identical(
-      ncol(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km)))
-      , nrow(regionSelect)
-    ))
-    
-    # ensure colnames of the spatial grid and row names of the amounts match
-    ## ensure that across and down are in the same positions,
-    ## otherwise change their positions
-    if(identical(
-      c(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km))))
-      , c(regionSelect$animal)
-    ))
-    {
-      regionalMix <- regionSelect
-      cat("all names match\n")
-      
-    } else {
-      
-      # see if any names are not present
-      wx <- colnames(regionGrid)[!which(colnames(regionGrid) %in% regionSelect$animal)]
-      stopifnot(length(wx) == 0)
-      
-      regionalMix <- regionSelect[match(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km)))
-                                        , regionSelect$animal), ]   
-      
-      # recheck - identical?
-      stopifnot(identical(
-        c(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km))))
-        , c(regionalMix$animal)
-      ))
-      cat("names match after reshuffle\n")
-    }
-    head(regionalMix)
-    
-    # multiply the animals in that region by their emissions
-    ## shorten regional animals emissions
-    regionalMix0 <- regionalMix %>% as.data.frame()
-    regionalMix0[is.na(regionalMix0)] <- 0
-    head(regionalMix0)
-    
-    # shorten the animal numbers
-    anr <- regionGrid %>%
-      dplyr::select(-c(rcFid_1km, region_broad)) %>%
-      st_drop_geometry()
-    names(anr)
-    
-    stopifnot(length(regionalMix0$animal[which(!regionalMix0$animal %in% names(anr))]) == 0)
-    
-    # get index of column of interest
-    coltoAnalyse <- which(names(regionalMix0) == analyseColumn)
-    # multiply for result
-    trya <- as.matrix(anr)
-    dim(trya)
-    dim(regionalMix0 %>%
-          dplyr::select(all_of(coltoAnalyse)) %>%
-          as.vector() %>%
-          unlist() %>%
-          as.data.frame())
-    finalCol <- "total" # set row total name
-    anrTimes <- as.matrix(anr) %*% diag(regionalMix0 %>%
-                                          dplyr::select(all_of(coltoAnalyse)) %>%
-                                          as.vector() %>%
-                                          unlist()) %>%
-      as.data.frame() %>%
-      mutate(!!finalCol := rowSums(.[], na.rm = T)) 
-    anr[22005:22010, ]
-    anrTimes[22005:22010, ]
-    anrTimes[91:95, ]
-    
-    # assign names back
-    names(anrTimes)[1:(ncol(anrTimes)-1)] <- c(names(regionGrid  %>%
-                                                       dplyr::select(-c(rcFid_1km, region_broad))))
-    head(anrTimes)
-    
-    # run some checks
-    stopifnot(anr[20, 20] * regionalMix0[20, analyseColumn] == anrTimes[20, 20])
-    stopifnot(anr[100, 100] * regionalMix0[100, analyseColumn] == anrTimes[100, 100])
-    stopifnot(anr[200, 200] * regionalMix0[200, analyseColumn] == anrTimes[200, 200])
-    
-    anrTimes <- anrTimes %>%
-      # include id col back in
-      bind_cols(regionGrid %>% dplyr::select(rcFid_1km), .)
-    head(anrTimes)
-    return(anrTimes)
-  })
-  
-  # combine back together
-  anrTimesbind <- bind_rows(regSplit)
-  
-  st_write(anrTimesbind, file.path("scenario", "results"
-                                   , paste0("ManMgmt_", basename(mapsToEval.list[[i]])))
-           , append=TRUE)
-  
-  ##### 3c - animal excretions #####
-  # load in animal excretions - a per-animal emission value
-  excrete <- fread(file.path("results", "animals", "annual_grazing_emissions.csv"))
-  head(excrete)
-  analyseColumn <- "grazEmisYr_kgCO2e"
-  dfIn.section <- excrete
-  
-  # split by regions current region
-  x <- ukRegionsPossible[[2]]
-  regSplit <- pblapply(ukRegionsPossible, function(x){
-    cat(x, "| ")
-    currRegion <- x
-    # use region to extract from over all grid
-    regionGrid <- mapsToEval.in2 %>% st_drop_geometry() %>%
-      # remove land covers
-      dplyr::select(-contains("_ha")) %>%
-      filter(region_broad == currRegion)
-    head(regionGrid)
-    table(colSums(regionGrid %>% dplyr::select(where(is.numeric)))) %>% as.data.frame()
-    
-    # use the same information for the animal attributes grid, but add 'All' as well
-    regionSelect <- dfIn.section %>% 
-      filter(UK.Region %in% c(currRegion, "All"))
-    head(regionSelect)
-    
-    # ensure lengths match
-    stopifnot(identical(
-      ncol(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km)))
-      , nrow(regionSelect)
-    ))
-    
-    # ensure colnames of the spatial grid and row names of the amounts match
-    ## ensure that across and down are in the same positions,
-    ## otherwise change their positions
-    if(identical(
-      c(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km))))
-      , c(regionSelect$animal)
-    ))
-    {
-      regionalMix <- regionSelect
-      cat("all names match\n")
-      
-    } else {
-      
-      # see if any names are not present
-      wx <- colnames(regionGrid)[!which(colnames(regionGrid) %in% regionSelect$animal)]
-      stopifnot(length(wx) == 0)
-      
-      regionalMix <- regionSelect[match(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km)))
-                                        , regionSelect$animal), ]   
-      
-      # recheck - identical?
-      stopifnot(identical(
-        c(names(regionGrid %>% dplyr::select(-c(region_broad, rcFid_1km))))
-        , c(regionalMix$animal)
-      ))
-      cat("names match after reshuffle\n")
-    }
-    head(regionalMix)
-    
-    # multiply the animals in that region by their emissions
-    ## shorten regional animals emissions
-    regionalMix0 <- regionalMix %>% as.data.frame()
-    regionalMix0[is.na(regionalMix0)] <- 0
-    head(regionalMix0)
-    
-    # shorten the animal numbers
-    anr <- regionGrid %>%
-      dplyr::select(-c(rcFid_1km, region_broad)) %>%
-      st_drop_geometry()
-    names(anr)
-    
-    stopifnot(length(regionalMix0$animal[which(!regionalMix0$animal %in% names(anr))]) == 0)
-    
-    # get index of column of interest
-    coltoAnalyse <- which(names(regionalMix0) == analyseColumn)
-    # multiply for result
-    trya <- as.matrix(anr)
-    dim(trya)
-    dim(regionalMix0 %>%
-          dplyr::select(all_of(coltoAnalyse)) %>%
-          as.vector() %>%
-          unlist() %>%
-          as.data.frame())
-    finalCol <- "total" # set row total name
-    anrTimes <- as.matrix(anr) %*% diag(regionalMix0 %>%
-                                          dplyr::select(all_of(coltoAnalyse)) %>%
-                                          as.vector() %>%
-                                          unlist()) %>%
-      as.data.frame() %>%
-      mutate(!!finalCol := rowSums(.[], na.rm = T)) 
-    anr[22005:22010, ]
-    anrTimes[22005:22010, ]
-    anrTimes[91:95, ]
-    
-    # assign names back
-    names(anrTimes)[1:(ncol(anrTimes)-1)] <- c(names(regionGrid  %>%
-                                                       dplyr::select(-c(rcFid_1km, region_broad))))
-    head(anrTimes)
-    
-    # run some checks
-    stopifnot(anr[20, 20] * regionalMix0[20, analyseColumn] == anrTimes[20, 20])
-    stopifnot(anr[100, 100] * regionalMix0[100, analyseColumn] == anrTimes[100, 100])
-    stopifnot(anr[2000, 2000] * regionalMix0[2000, analyseColumn] == anrTimes[2000, 2000])
-    
-    anrTimes <- anrTimes %>%
-      # include id col back in
-      bind_cols(regionGrid %>% dplyr::select(rcFid_1km), .)
-    head(anrTimes)
-    return(anrTimes)
-  })
-  
-  # combine back together
-  anrTimesbind <- bind_rows(regSplit)
-  
-  st_write(anrTimesbind, file.path("scenario", "results"
-                                   , paste0("excrete_", basename(mapsToEval.list[[i]])))
-           , append=TRUE)
-} # end of 'i'
-
-##### 3d - fertiliser use #####
-mapsToEval.crops <- mapsToEval.in2 %>%
-  # keep land covers
-  dplyr::select(rcFid_1km, region_broad, contains("_ha")) 
-names(mapsToEval.crops)
-
-# limeRegs are in t/ha, so determine amount for km2 depending on arable and grass areas
-limeReqsAmounts <- mapsToEval.crops %>% dplyr::select(rcFid_1km, winterwheat_ha:sugarbeet_ha, improved_grass_ha) %>%
-  st_drop_geometry() %>%
-  # get total arable area
-  mutate(total_arab_ha = rowSums(dplyr::select(., c(winterwheat_ha:sugarbeet_ha)), na.rm = T)) %>%
-  mutate(total_arab_ha = ifelse(is.na(total_arab_ha), 0, total_arab_ha)) %>%
-  rename(total_grass_ha = improved_grass_ha) %>%
-  dplyr::select(rcFid_1km, total_arab_ha, total_grass_ha) %>%
-  # make spatial again
-  merge(rcFid.grid %>% dplyr::select(rcFid_1km), .) %>%
-  # join with advised lime amounts
-  st_join(., limeReqs %>% dplyr::select(soilTyp:limeReq_tha_gras)) %>%
-  # multiply arable cover (in hectares) by amount of lime per ha
-  mutate(limeAmount_tonnes_arab = total_arab_ha * limeReq_tha_arab
-         # and do the same for grass
-         , limeAmount_tonnes_gras = total_grass_ha * limeReq_tha_gras
-         # and add them
-         , limeAmount_tonnes = limeAmount_tonnes_arab + limeAmount_tonnes_gras) %>%
-  filter(!is.na(soilTyp))
-head(limeReqsAmounts)
-
-# calculate the emissions from lime adage
-# https://naei.beis.gov.uk/data/ef-all-results?q=184177 states that the emission factor for limestone is 0.12 t CO2e t−1
-limeReqsAmounts$limeTco2e <- limeReqsAmounts$limeAmount_tonnes * 0.12
-head(limeReqsAmounts)
-
-# adjust crop data
-cropSoils <- mapsToEval.crops %>%
-  st_centroid()
-cropSoils <- cropSoils %>%
-  mutate(X = as.integer(unlist(map(cropSoils$geom, 1))),
-         Y = as.integer(unlist(map(cropSoils$geom, 2))))
-head(cropSoils)
-
-# merge with crop data
-cropSoilRain <- rootDepthUK %>%
-  merge(., cropSoils %>% st_drop_geometry() %>% dplyr::select(rcFid_1km:improved_grass_ha
-                                                              , sugarbeet_ha, X, Y)
-        , by = c("X", "Y"), all = T) %>%
-  filter(!is.na(rcFid_1km)) %>%
-  filter(!is.na(soilTyp))
-
-# concatenate the three categories
-cropSoilRain$snsCats <- paste(cropSoilRain$rainCat
-                              , cropSoilRain$soilTyp
-                              , cropSoilRain$depthRB209
-                              , sep = "_") 
-head(cropSoilRain)
-
-# merge with SNS parameter data to make spatial
-snsParasWide2 <- snsParasWide %>%
-  merge(., cropSoilRain
-        , by.x = "threeParas"
-        , by.y = "snsCats"
-        , all = T) %>%
-  dplyr::select(-c(soilTyp, rainCat, rootdepthuk, depthRB209)) %>%
-  relocate(threeParas, X, Y, rcFid_1km
-           # couple others
-           , sns_forage, oats_ha
-           , sns_sugarbeet, sugarbeet_ha
-           
-           # cereals
-           , sns_maize, maize_ha
-           , sns_winterwheat, winterwheat_ha
-           , sns_winterbarley, winterbarley_ha
-           , sns_springwheat, springwheat_ha
-           , sns_springbarley, springbarley_ha
-           
-           , sns_potatoes, potato_ha
-           , sns_beans, fieldbeans_ha
-           , sns_osr, rapeseed_ha
-           , sns_uncropped, improved_grass_ha) 
-head(snsParasWide2)
-
-# use matrix calculations - just areas
-snsMat1 <- snsParasWide2 %>%
-  st_drop_geometry() %>%
-  dplyr::select(oats_ha
-                , sugarbeet_ha
-                , maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha
-                , potato_ha
-                , fieldbeans_ha
-                , rapeseed_ha
-                , improved_grass_ha) %>%
-  as.matrix()
-head(snsMat1)
-
-## just sns categories
-snsMat2 <- snsParasWide2 %>%
-  st_drop_geometry() %>%
-  dplyr::select(sns_forage
-                , sns_sugarbeet
-                , sns_maize, sns_winterwheat, sns_winterbarley, sns_springwheat, sns_springbarley
-                , sns_potatoes
-                , sns_beans
-                , sns_osr
-                , sns_uncropped) %>%
-  as.matrix()
-head(snsMat2)
-
-## ------------ Notes --------------  ##
-## the below code determines how much SNS is necessary for each pixel by 
-## using the crop area and its SNS class
-## ------------ ----- --------------  ##
-
-# loop through sns categories
-m3 <- list()
-for(i in 0:3){
-  if(i == 0){
-    v = 1
-  } else {
-    v = v+1
-  }
-  
-  print(i)
-  nm <- paste0("sns", i, "_")
-  
-  # new instance
-  snsNew <- snsMat2
-  print(head(snsNew))
-  # make 1 or 0
-  M <- ifelse(snsNew==i,1,0)
-  print(head(M))
-  
-  # multiply by the area
-  print(head(snsMat1))
-  m2 <- M * snsMat1
-  print(head(m2))
-  
-  # sum the rows
-  m3[[v]] <- m2 %>%
-    as.data.frame() 
-  colnames(m3[[v]]) <- paste0(nm, gsub("sns_", "", colnames(m3[[v]])))
-  print(head(m3[[v]]))
-}
-
-# bind back together
-snsParasWide3 <- do.call(cbind, list(snsParasWide2, m3)) %>% as.data.frame() %>%
-  # merge back to spatial
-  merge(rcFid.grid %>% dplyr::select(rcFid_1km), .)
-head(snsParasWide3)
-
-# and with the derived SNS values
-snsParas <- merge(snsParasWide3, snsCropParametersWide 
-                  , by = "threeParas"
-                  , all = T) %>%
-  dplyr::select(-c(contains(c("sns_"))))
-head(snsParas)
-
-# get all unique names
-startCol <- which(colnames(snsParas) == "sns0_forage")
-endCol <- which(colnames(snsParas) == "sns3_uncropped")
-xCurr <- list()
-stop("xxx")
-for(i in startCol:endCol){
-  
-  cat(i, nm <- colnames(snsParas)[i], "\n")
-  nmKg <- paste0(nm, "_kgN")
-  
-  # select only columns that match
-  # multiple the amount of N suggested to be applied with the amount of hectares of
-  # that crop type
-  xCurr[[i]] <- snsParas %>%
-    st_drop_geometry() %>%
-    dplyr::select(rcFid_1km, contains(nm)) %>%
-    mutate(total = .[, 2] * .[, 3]) %>%
-    dplyr::select(rcFid_1km, total) %>%
-    rename(!!nmKg := total)
-}
-xCurr <- Filter(length, xCurr) # only get filled objects
-
-for(jx in 1:length(xCurr)){
-  
-  cat(jx, "\n")
-  x1 <- xCurr[[jx]] %>% unnest(cols = c()) %>% as.data.frame() %>% filter(.[[2]] > 0)
-  
-  if(jx == 1){
-    outout <- x1
-  } else {
-    outout <- merge(outout, x1, by = "rcFid_1km", all = T)
-  }
-  
-}
-
-xx <- merge(xCurr[[1]] %>% unnest(cols = c()) %>% as.data.frame()
-            , xCurr[[2]] %>% unnest(cols = c()) %>% as.data.frame()
-            , by = "rcFid_1km")
-x1 <- xCurr[[1]] %>% unnest(cols = c()) %>% as.data.frame() %>% filter(.[[2]] > 0)
-x2 <- xCurr[[2]] %>% unnest(cols = c()) %>% as.data.frame() %>% filter(.[[2]] > 0)
-
-x1t <- table(x1$rcFid_1km) %>% as.data.frame()
-x2t <- table(x2$rcFid_1km) %>% as.data.frame()
-max(x1t$Freq)
-max(x2t$Freq)
-
-# merge all together
-snsParasKgN <- Reduce(function(x, y) merge(unlist(x), unlist(y), by = "rcFid_1km", all = TRUE),
-                      xCurr[1:2]) %>%
-  # get total
-  mutate(totalNperKm = rowSums(select(., 2:last_col()), na.rm = T)) %>%
-  # merge back to spatial
-  merge(cropSoilRain %>% dplyr::select(X, Y, rcFid_1km), .)
-head(snsParasKgN)
-
-# } # end of 'i'
