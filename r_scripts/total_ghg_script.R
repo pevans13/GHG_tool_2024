@@ -108,6 +108,7 @@ source("./r_scripts/proj_packages.R")
 #### 0 - set initial paths ####
 englishRegions <- "N:/Data/UK/Boundary/region/RGN_DEC_2021_EN_BUC.shp"
 soilsData <- "P:/NEC07065_AGLAND/WP1/SpatialData/Soils_1km/"
+scenarioResultsPath <- file.path("scenario", "results") # create scenario save path
 
 #### 0 - run which parts? ####
 # select which bits need running
@@ -137,7 +138,7 @@ part3AnimalAttributes <- F
 part4Enteric <- F
 
 # part 5 calculates the amount of manure per animal and the emissions from its management 
-part5ManureManagement <- F
+part5ManureManagement <- T
 
 # part 6 calculates the amount of excretions produced per animal
 part6excretions <- F
@@ -151,9 +152,7 @@ nManureScens <- F
 ## 2. determine rainfall, crop type, and Soil Nitrogen Supply (SNS)
 ## 3. determine N use per km2 - derived from individual crops
 ## 4. calculate emissions based purely on assumed fertiliser
-part7fertiliserUse <- T
-### fertiliser scens
-fertiliserScens <- F
+part7fertiliserUse <- F
 
 # part 8 determines the emission and sequestration values based on non-agricultural land use
 part8landuse <- F
@@ -167,7 +166,7 @@ part9residue <- F
 part10onfarmenergy <- F
 
 # combine all the final emissions together
-part11combineemissions <- F
+part11combineemissions <- T
 
 # run all the calculations for the scenarios as well
 runAllScenarios <- F
@@ -225,10 +224,10 @@ scenPath <- file.path("scenario", "scen_maps")
 scenarios <- c(
   # write paths here (with a comma at the start, with the exception of path 1)
   file.path(scenPath, "Ag_15.gpkg") # path 1
-  # , file.path(scenPath, "Ag_30.gpkg") # path 2
-  # , file.path(scenPath, "baseline2007.gpkg") # path 3
-  # , file.path(scenPath, "Gr_15.gpkg") # path 4
-  # , file.path(scenPath, "Gr_30.gpkg") # path 5
+  , file.path(scenPath, "Ag_30.gpkg") # path 2
+  , file.path(scenPath, "baseline2007.gpkg") # path 3
+  , file.path(scenPath, "Gr_15.gpkg") # path 4
+  , file.path(scenPath, "Gr_30.gpkg") # path 5
 )
 
 # if you need to separate them into animals and land cover, put 'T' below
@@ -2912,6 +2911,51 @@ if(part5ManureManagement){
     as.data.frame()
   head(netEnergyTable)
   
+  ##### Tier 1 calculation #####
+  ## ---------- notes ---------- # 
+  ## The IPCC Tier 1 method relies on default emission values based on 
+  ## average temperature of a region, and the livestock 'species'
+  ## --------------------------- # 
+  unique(netEnergyTable$category)
+  
+  Tier1Manure <- netEnergyTable %>%
+    dplyr::select(animal, category, Weight_Kg) %>%
+    mutate(EF_kgCH4_yr = ifelse(category == "lactating_dairy", 21
+                                , ifelse(grepl("other_cattle|calf|heifer", category), 6
+                                         , ifelse(grepl("pigs", category), 3.5
+                                                  , ifelse(grepl("ewe|sheep|ram", category), 0.19
+                                                           , ifelse(category == "poultry", 1.2     
+                                                                    , NA)))))) %>%
+    mutate(kgVS = ifelse(category == "lactating_dairy", 8.4
+                         , ifelse(grepl("other_cattle|calf|heifer", category), 5.7
+                                  , ifelse(grepl("pigs", category), 4.5
+                                           , ifelse(grepl("ewe|sheep|ram", category), 8.2
+                                                    , ifelse(category == "poultry", 12.3     
+                                                             , NA)))))) %>%
+    mutate(kgVS_yr = kgVS * (Weight_Kg / 1000) * 365) %>%
+    mutate(trial_emiss = kgVS_yr * EF_kgCH4_yr)
+  
+  awms_table <- bind_rows(
+    tibble(factor = "system",
+           awms_slurry = 0.60, 
+           awms_solid = 0.09, 
+           awms_past = 0.08, 
+           awms_daily = 0.2),
+    tibble(factor = "EF",
+           awms_slurry = 33.8, 
+           awms_solid = 3.2, 
+           awms_past = 0.2, 
+           awms_daily = 0.2)
+  ) %>% t() %>% as.data.frame()
+  names(awms_table) <- awms_table[1,]
+  awms_table <- awms_table[-1,]
+  # add VS for dairy
+  awms_table$VS <- 5.3
+  # multiply
+  awms_table <- awms_table %>%
+    mutate(ech4kg = (as.numeric(system) * as.numeric(EF) * VS))
+  awms_dairy <- sum(awms_table$ech4)
+
   ##### manure characteristics #####
   ## ---------- notes ---------- # 
   ## The IPCC Tier 2 method relies on two primary types of inputs that affect the 
@@ -2931,6 +2975,8 @@ if(part5ManureManagement){
   ## If average daily VS excretion rates are not available, country-specific VS
   ## excretion rates can be estimated from feed intake levels (IPCC, 2019). These
   ## were calculated in the ghg_excretions.
+  
+  ## Here, values from the most recent UK inventory is used (Ward et al., 2024) 
   ## --------------------------- # 
   
   # load in the GE required per day, from which VS can be calculated
@@ -3106,17 +3152,13 @@ if(part5ManureManagement){
                   , (all_of(c(outsideName)))) %>%
     rename("kgVSdayIn" = insideName
            , "kgVSdayOut" = outsideName) %>%
-    # get the 6-month value of each 
-    # per 6-month value
-    mutate(kgVS6mnIn = kgVSdayIn * (365/2)
-           , kgVS6mnOut = kgVSdayOut * (365/2))
-  
+    # get the 12-month value of least, most realistic, DE
+    mutate(kgVSyr = kgVSdayOut * (365))
   head(VStableScen)
   
-  # reduce
+  ## for dairy cattle, change VS to 5.3 VS day-1 animal-1, to match most recent inventory
   VStableScen <- VStableScen %>%
-    dplyr::select(-c(kgVSdayIn, kgVSdayOut))
-  head(VStableScen)
+    mutate(kgVSyr = ifelse(category == "lactating_dairy", 5.3*365, kgVSyr))
   
   ###### 5c - B0 (maximum methane producing capacity) ######
   ## ---------- notes ---------- # 
@@ -4286,7 +4328,9 @@ if(part7fertiliserUse){
   ## generally soil characteristics, while later sections assess each data range
   ## in turn (i.e., 2015, and then scenario data)
   ## ------------ ----- --------------  ##
-
+  
+  cat("----------- Starting fertiliser use section -----------\n\n")
+  
   ##### 7a - Determine fert-relevant soil characteristics #####
   ## ------------ Notes --------------  ##
   ## pH and other soil data come from the P drive, which contains data from 
@@ -4297,10 +4341,10 @@ if(part7fertiliserUse){
   # should inlcude: pH, silt, sand, and clay content, and OC.
   soils <- list.files(soilsData
                       , pattern = ".tif$", full.names = T)
-  cat(basename(soils), sep = "\n")
+  # cat(basename(soils), sep = "\n")
   # combine to a df
   soils <- rast(lapply(soils, rast))
-  print(soils)
+  # print(soils)
   soils <- as.data.frame(soils, xy = T)
   soils <- soils[complete.cases(soils$Soil_TopsoilClayContent_1k), ]
   head(soils)
@@ -4325,7 +4369,8 @@ if(part7fertiliserUse){
   head(soils)
   
   # save
-  st_write(soils, file.path("data_in", "crops", "soils.gpkg"), append = F)
+  cat("*Saving soils here:", file.path("data_in", "crops", "soils.gpkg"), "*\n")
+  st_write(soils, file.path("data_in", "crops", "soils.gpkg"), append = F, quiet = T)
   
   # write readme
   sink(file = NULL)
@@ -4405,9 +4450,9 @@ if(part7fertiliserUse){
   head(limeReqs)
   # tidy
   rm(limeReqsSand, limeReqsSilt, limeReqsClay)
-
+  
   # stop("after lime requirements")
-    
+  
   ##### 7b - Calculate factors that will affect fertiliser emissions [rainfall, Soil Nitrogen Supply (SNS)] #####
   ## ------------ Notes --------------  ##
   ## According to RB209, the amount of fertiliser used is dependent on the rainfall amount, 
@@ -4772,12 +4817,13 @@ if(part7fertiliserUse){
                      , legumes = c(-0.023, 0, -0.045)
                      , other_upland = c(0, 0, -0.04))
   
-  ##### 7d - Calculate lime requirements #####
+  # stop("before lime requirements")
+  #### 7d - Calculate lime requirements ####
   for(iscen in 1:(length(scenarios) + 1)){
     
     # if 'iscen' is 1, use 2015 data
     if(iscen == 1){
-      cat("Starting 2015 data...\n")
+      cat("Starting 2015 data for lime requirements...\n")
       # set input location - for land cover
       currPath <- file.path("./data_in", "land_cover")
       # for crops
@@ -4786,60 +4832,79 @@ if(part7fertiliserUse){
       savePath <- file.path("./results", "arable")
       
       # import GE 1 km2 crop area for 2015
-      cropsMapIn <-st_read(file.path(currPath, "land_cover_table.gpkg"))
+      cropsMapIn <-st_read(file.path(currPath, "land_cover_table.gpkg"), quiet = T)
       head(cropsMapIn)
       
     } else { # if > 1, use the scenarios
       scenName <- gsub(".gpkg", "", basename(scenarios[iscen-1]))
-      cat("Starting", scenName, "data...\n")
+      cat("Starting", scenName, "data for lime requirements...\n")
       
       # import GE 1 km2 crop area for 2015
-      cropsMapIn <-st_read(file.path(scenPath, paste0(scenName, ".gpkg")))
+      cropsMapIn <-st_read(file.path(scenPath, paste0(scenName, ".gpkg")), quiet = T)
       head(cropsMapIn)
       
     }
     
-    
     # combine with crop area
-    cropSoils <- st_join(cropsMapIn, soils) %>% distinct()
+    cropSoils <- st_join(cropsMapIn %>%
+                           dplyr::select(any_of(c("Name", "lcm", "rcFid_1km"))
+                                         , matches("_ha$"))
+                         , soils) %>% distinct()
     head(cropSoils)
     
+    ##### 7d1 - Determine pH, and thus how much lime may be needed #####
+    # get names to analyse
+    lcCropNames <- c("rcFid_1km", "winterwheat_ha", "winterbarley_ha", "springwheat_ha", "oats_ha", "maize_ha"
+                     , "rapeseed_ha", "springbarley_ha", "potato_ha", "fieldbeans_ha", "sugarbeet_ha"
+                     , "improved_grass_ha")
+    
+    # limeRegs are in t/ha, so determine amount for km2 depending on arable and grass areas
+    limeReqsAmounts <- cropSoils %>% dplyr::relocate(all_of(lcCropNames)) %>%
+      st_drop_geometry() %>%
+      # get total arable area
+      mutate(total_arab_ha = rowSums(dplyr::select(., c(winterwheat_ha:sugarbeet_ha)))) %>%
+      mutate(total_arab_ha = ifelse(is.na(total_arab_ha), 0, total_arab_ha)) %>%
+      rename(total_grass_ha = improved_grass_ha) %>%
+      dplyr::select(rcFid_1km, total_arab_ha, total_grass_ha) %>%
+      # make spatial again
+      merge(cropSoils[, "rcFid_1km"], .) %>%
+      # join with advised lime amounts
+      st_join(., limeReqs %>% dplyr::select(soilTyp:limeReq_tha_gras)) %>%
+      # multiply arable cover (in hectares) by amount of lime per ha
+      mutate(limeAmount_tonnes_arab = total_arab_ha * limeReq_tha_arab
+             # and do the same for grass
+             , limeAmount_tonnes_gras = total_grass_ha * limeReq_tha_gras
+             # and add them
+             , limeAmount_tonnes = limeAmount_tonnes_arab + limeAmount_tonnes_gras) %>%
+      filter(!is.na(soilTyp))
+    head(limeReqsAmounts)
+    
+    # calculate the emissions from lime adage
+    # https://naei.beis.gov.uk/data/ef-all-results?q=184177 states that the emission factor 
+    # for limestone is 0.12 t CO2e t−1
+    limeReqsAmounts$limeTco2e <- limeReqsAmounts$limeAmount_tonnes * 0.12
+    head(limeReqsAmounts)
+    
+    # save
+    if(iscen == 1){
+      cat("   ...saving", file.path(savePath, "liming_eval.gpkg"), "\n")
+      st_write(limeReqsAmounts, file.path(savePath, "liming_eval.gpkg")
+               , append = F, quiet = T)
+      fwrite(st_drop_geometry(limeReqsAmounts), file.path(savePath, "liming_eval.csv")
+             , row.names = F)
+    } else {
+      cat("   ...saving", file.path(scenarioResultsPath
+                                    , paste0("liming_eval", scenName, ".gpkg")), "\n")
+      st_write(limeReqsAmounts
+               , file.path(scenarioResultsPath
+                           , paste0("liming_eval", scenName, ".gpkg"))
+               , append = F, quiet = T)
+      fwrite(st_drop_geometry(limeReqsAmounts)
+             , file.path(scenarioResultsPath
+                         , paste0("liming_eval", scenName, ".csv")),
+             row.names = F)
+    }
   }
-  
-  
-  ##### 7d - Determine pH, and thus how much lime may be needed #####
-
-  #### calculate lime for 2015 ####
-  # limeRegs are in t/ha, so determine amount for km2 depending on arable and grass areas
-  limeReqsAmounts <- cropArea %>% dplyr::select(rcFid_1km, winterwheat_ha:sugarbeet_ha, improved_grass_ha) %>%
-    st_drop_geometry() %>%
-    # get total arable area
-    mutate(total_arab_ha = rowSums(dplyr::select(., c(winterwheat_ha:sugarbeet_ha)))) %>%
-    mutate(total_arab_ha = ifelse(is.na(total_arab_ha), 0, total_arab_ha)) %>%
-    rename(total_grass_ha = improved_grass_ha) %>%
-    dplyr::select(rcFid_1km, total_arab_ha, total_grass_ha) %>%
-    # make spatial again
-    merge(cropArea[, "rcFid_1km"], .) %>%
-    # join with advised lime amounts
-    st_join(., limeReqs %>% dplyr::select(soilTyp:limeReq_tha_gras)) %>%
-    # multiply arable cover (in hectares) by amount of lime per ha
-    mutate(limeAmount_tonnes_arab = total_arab_ha * limeReq_tha_arab
-           # and do the same for grass
-           , limeAmount_tonnes_gras = total_grass_ha * limeReq_tha_gras
-           # and add them
-           , limeAmount_tonnes = limeAmount_tonnes_arab + limeAmount_tonnes_gras) %>%
-    filter(!is.na(soilTyp))
-  head(limeReqsAmounts)
-  
-  # calculate the emissions from lime adage
-  # https://naei.beis.gov.uk/data/ef-all-results?q=184177 states that the emission factor 
-  # for limestone is 0.12 t CO2e t−1
-  limeReqsAmounts$limeTco2e <- limeReqsAmounts$limeAmount_tonnes * 0.12
-  head(limeReqsAmounts)
-  
-  # save
-  st_write(limeReqsAmounts, file.path(savePath, "liming_eval.gpkg"), append = F)
-  fwrite(st_drop_geometry(limeReqsAmounts), file.path(savePath, "liming_eval.csv"), row.names = F)
   
   # write readme
   sink(file = NULL)
@@ -4869,139 +4934,84 @@ if(part7fertiliserUse){
   
   sink(file = NULL)
   
-  #### calculate lime for SCENARIOS ####
-  
-  cat(scenarios, sep = "\n")
-  # stop("before lime scenarios")
-  
-  # create scenario save path
-  scenarioResultsPath <- file.path("scenario", "results")
-  
-  # create empty list to save the scenario crop and soil dfs
-  fulldf.cropSoils <- list()
-  
-  if(fertiliserScens){
-    # load in all the animal grids for the scenarios
-    for(i in 1:length(scenarios)){
-      tic("scenario run")
-      scenName <- gsub(".gpkg", "", basename(scenarios[[i]]))
-      cat(paste0("starting N excretion for ... ", scenName, "[", i, "] ..."), "\n")
-      # load in dataset from finer detail - just include land
-      fulldf.landCover <- st_read(file.path(scenPath, "finer_detail", paste0(scenName, "_land.gpkg")))
-      head(fulldf.landCover)
-      
-      # limeRegs are in t/ha, so determine amount for km2 depending on arable and grass areas
-      limeReqScen <- fulldf.landCover %>% dplyr::select(rcFid_1km, winterwheat_ha:sugarbeet_ha, improved_grass_ha) %>%
-        st_drop_geometry() 
-      stopifnot(ncol(limeReqScen) == 12)
-      names(limeReqScen)
-      
-      limeReqScen <- limeReqScen %>%
-        # get total arable area
-        mutate(total_arab_ha = rowSums(dplyr::select(., c(winterwheat_ha:sugarbeet_ha)))) %>%
-        mutate(total_arab_ha = ifelse(is.na(total_arab_ha), 0, total_arab_ha)) %>%
-        rename(total_grass_ha = improved_grass_ha) %>%
-        dplyr::select(rcFid_1km, total_arab_ha, total_grass_ha) %>%
-        # make spatial again
-        merge(cropArea[, "rcFid_1km"], .) %>%
-        # join with advised lime amounts
-        st_join(., limeReqs %>% dplyr::select(soilTyp:limeReq_tha_gras)) %>%
-        # multiply arable cover (in hectares) by amount of lime per ha
-        mutate(limeAmount_tonnes_arab = total_arab_ha * limeReq_tha_arab
-               # and do the same for grass
-               , limeAmount_tonnes_gras = total_grass_ha * limeReq_tha_gras
-               # and add them
-               , limeAmount_tonnes = limeAmount_tonnes_arab + limeAmount_tonnes_gras) %>%
-        filter(!is.na(soilTyp))
-      head(limeReqScen)
-      
-      # calculate the emissions from lime adage
-      # https://naei.beis.gov.uk/data/ef-all-results?q=184177 states that the emission factor for limestone is 0.12 t CO2e t−1
-      limeReqScen$limeTco2e <- limeReqScen$limeAmount_tonnes * 0.12
-      head(limeReqScen)
-      
-      ## save
-      st_write(limeReqScen
-               , file.path(scenarioResultsPath
-                           , paste0("liming_eval", scenName, ".gpkg"))
-               , append = F)
-      fwrite(st_drop_geometry(limeReqScen)
-             , file.path(scenarioResultsPath
-                         , paste0("liming_eval", scenName, ".csv")),
-             row.names = F)
-      
-      # combine with crop area
-      fulldf.cropSoils[[i]] <- st_join(fulldf.landCover, soils) %>%
-        # add the scenario as another column
-        mutate(scen = scenName)
-    }
-  }
-  
   # stop("after lime scenarios")
   
+  ##### 7d2 - determine fertiliser based on SNS #####
   ## ------------ Notes --------------  ##
   ## The below now does the calculations for the original data and the
-  ## scenarios saved in a list above. 
+  ## scenarios  
   ## ------------ ----- --------------  ##
   
-  # the scenario names were added as a column to the scenario ones already, but
-  # need to add to to original data
-  cropSoils <- cropSoils %>%
-    mutate(scen = "original_data")
-  ## bind all together
-  cropSoils.all <- cropSoils %>%
-    bind_rows(fulldf.cropSoils)
-  head(cropSoils.all)
-  unique(cropSoils.all$scen)
-  
-  # adjust crop data
-  cropSoils.all <- cropSoils.all %>%
-    st_centroid()
-  plot(cropSoils.all[1])
-  cropSoils.all <- cropSoils.all %>%
-    mutate(X = as.integer(unlist(map(cropSoils.all$geom, 1))),
-           Y = as.integer(unlist(map(cropSoils.all$geom, 2)))) %>%
-    # drop spatial coords to make calculations quicker
-    st_drop_geometry()
-  head(cropSoils.all)
-  
-  ## ------------ Notes --------------  ##
-  ## below, we split the analysis into each individual scenario,
-  ## which includes the original data
-  ## ------------ ----- --------------  ##
-  
-  scensToRun <- unique(cropSoils.all$scen)
-  cropSoils.split <- cropSoils.all %>%
-    group_split(scen)
-  rm(cropSoils.all)
+  # concatenate the three categories for fertiliser
+  rootDepthUK$snsCats <- paste(rootDepthUK$rainCat
+                               , rootDepthUK$soilTyp
+                               , rootDepthUK$depthRB209
+                               , sep = "_") 
   
   iscen.numb <- 0; iscen.list <- list()
-  snsParasWide3.allScens <- pblapply(cropSoils.split, function(iscen){
+  for(iscen in 1:(length(scenarios) + 1)){
     
-    # for(iscen in cropSoils.split){
-    tic("one rotation of cropSoils.split")
+    tic("   ...one rotation of converting SNS parameters")
     iscen.numb <- iscen.numb + 1
     
-    # get name
-    currScen <- unique(iscen$scen)
+    # if 'iscen' is 1, use 2015 data
+    if(iscen == 1){
+      
+      cat("Starting 2015 data for fertiliser parameters...\n")
+      # set input location - for land cover
+      currPath <- file.path("./data_in", "land_cover")
+      # for crops
+      CropPath <- "./data_in/crops"
+      # set output location
+      savePath <- file.path("./results", "arable")
+      
+      # import GE 1 km2 crop area for 2015
+      cropsMapIn <-st_read(file.path(currPath, "land_cover_table.gpkg"), quiet = T) %>%
+        st_centroid() %>%
+        mutate(X = as.integer(unlist(map(.$geom, 1))),
+               Y = as.integer(unlist(map(.$geom, 2)))) %>%
+        # add in current scenario
+        mutate(scen = "original_data")
+      head(cropsMapIn)
+      
+      # manure for original land cover
+      kgNmanure <- st_read(file.path("results", "animals", "spatialN1km_kgN.gpkg")
+                           , quiet = T)
+      
+    } else { # if > 1, use the scenarios
+      
+      scenName <- gsub(".gpkg", "", basename(scenarios[iscen-1]))
+      cat("\nStarting", scenName, "data for fertiliser parameters...\n")
+      
+      # import GE 1 km2 crop area for 2015
+      cropsMapIn <-st_read(file.path(scenPath, paste0(scenName, ".gpkg")), quiet = T) %>%
+        st_centroid() %>%
+        mutate(X = as.integer(unlist(map(.$geom, 1))),
+               Y = as.integer(unlist(map(.$geom, 2)))) %>%
+        # add in current scenario
+        mutate(scen = scenName)
+      head(cropsMapIn)
+      
+      # manure for scenarios
+      ## use the name to get filter total possible fertiliser, and to read the specific manure output
+      nmmanure <- file.path("scenario", "results"
+                            , paste0("spatialN1km_kgN", scenName, ".gpkg"))
+      kgNmanure <- st_read(file.path("results", "animals", "spatialN1km_kgN.gpkg")
+                           , quiet = T)
+      
+    }
     
     # merge with crop data
     cropSoilRain <- rootDepthUK %>%
-      merge(., iscen %>% st_drop_geometry() %>%
+      merge(., cropsMapIn %>% st_drop_geometry() %>%
               dplyr::select(rcFid_1km, X, Y, scen
                             , ends_with("_ha"))
             , by = c("X", "Y"), all = T) %>%
       filter(!is.na(rcFid_1km)) %>%
       filter(!is.na(soilTyp))
-    
-    # concatenate the three categories
-    cropSoilRain$snsCats <- paste(cropSoilRain$rainCat
-                                  , cropSoilRain$soilTyp
-                                  , cropSoilRain$depthRB209
-                                  , sep = "_") 
-    
     head(cropSoilRain)
     
+    cat("   ...converting SNS parameters...\n")
     # merge to make spatial
     snsParasWide2 <- snsParasWide %>%
       merge(., cropSoilRain
@@ -5030,6 +5040,7 @@ if(part7fertiliserUse){
     snsParasWide2[is.na(snsParasWide2)] <- 0
     
     # use matrix calculations - just areas
+    cat("   ...matrix calculations...\n")
     snsMat1 <- snsParasWide2 %>%
       st_drop_geometry() %>%
       dplyr::select(oats_ha
@@ -5059,28 +5070,28 @@ if(part7fertiliserUse){
     ## the below code determines how much SNS is necessary for each pixel by 
     ## using the crop area and its SNS class
     ## ------------ ----- --------------  ##
-    
+    cat("   ...SNS amount calculations...\n")
     # loop through sns categories
     m3 <- list()
     for(i in 0:3){
       if(i == 0){
+        cat("      ...Now:", nm <-paste0("sns", i), "...")
         v = 1
       } else {
         v = v+1
+        cat(" |", nm <-paste0("sns", i))
       }
-      
-      print(i)
-      nm <- paste0("sns", i, "_")
+      nm <- paste0(nm, "_")
       
       # new instance
       snsNew <- snsMat2
-      print(head(snsNew))
+      # print(head(snsNew))
       # make 1 or 0
       M <- ifelse(snsNew==i,1,0)
       # print(head(M))
       
       # multiply by the area
-      print(head(snsMat1))
+      # print(head(snsMat1))
       m2 <- M * snsMat1
       # print(head(m2))
       
@@ -5089,6 +5100,7 @@ if(part7fertiliserUse){
         as.data.frame() 
       colnames(m3[[v]]) <- paste0(nm, gsub("sns_", "", colnames(m3[[v]])))
       # print(head(m3[[v]]))
+      
     }
     
     # bind back together
@@ -5096,37 +5108,216 @@ if(part7fertiliserUse){
       # merge back to spatial
       merge(cropSoilRain %>% dplyr::select(rcFid_1km, scen), .)
     head(snsParasWide3)
+    cat("\n")
     
+    # stop("before writing sns_and_crops_scens.gpkg")
+    
+    # save
+    if(iscen == 1){ # (for original data)
+      cat("   ...saving", file.path(CropPath, "sns_and_crops.gpkg"), "\n")
+      st_write(snsParasWide3 %>% 
+                 filter(scen == "original_data") %>%
+                 dplyr::select(-scen)
+               , file.path(CropPath, "sns_and_crops.gpkg")
+               , append = F, row.names = F, quiet = T)
+    } else { # save (for scenario data)
+      cat("   ...saving", file.path(scenarioResultsPath
+                                    , paste0("sns_and_crops_", scenName, ".gpkg"))
+          , "\n")
+      st_write(snsParasWide3 %>% 
+                 filter(scen != "original_data")
+               , file.path(scenarioResultsPath
+                           , paste0("sns_and_crops_", scenName, ".gpkg"))
+               , append = F, row.names = F, quiet = T)
+    }
+    
+    cat("   ...SNS wide...\n")
+    # and with the derived SNS values
+    snsParas <- merge(snsParasWide3, snsCropParametersWide 
+                      , by = "threeParas"
+                      , all = T) %>%
+      dplyr::select(-c(contains(c("sns_"))))
+    head(snsParas)
+    unique(snsParas$scen)
+    
+    # get all unique names
+    startCol <- which(colnames(snsParas) == "sns0_forage")
+    endCol <- which(colnames(snsParas) == "sns3_uncropped")
+    xCurr <- list()
     toc()
-    beepr::beep(sample(1:11, 1))
-    return(snsParasWide3)
-  }) # end of lapply
+    
+    tic("   ...xCurr")
+    cat("   ...starting xCurr...\n")
+    for(i in startCol:endCol){
+      
+      # cat(i, nm <- colnames(snsParas)[i], "\n")
+      nmKg <- paste0(nm <- colnames(snsParas)[i], "_kgN")
+      
+      # select only columns that match
+      # multiple the amount of N suggested to be applied with the amount of hectares of
+      # that crop type
+      xCurr[[i]] <- snsParas %>%
+        st_drop_geometry() %>%
+        dplyr::select(rcFid_1km, contains(nm), scen) %>%
+        mutate(total = .[, 2] * .[, 3]) %>%
+        dplyr::select(rcFid_1km, scen, total) %>%
+        rename(!!nmKg := total)
+    }
+    toc()
+    
+    cat("   ...starting xCurr2...\n")
+    tic("   ...xCurr2")
+    xCurr <- Filter(length, xCurr) # only get filled objects
+    toc()
+    
+    # merge all together
+    tic("   ...snsParasKgN")
+    cat("   ...starting snsParasKgN...\n")
+    # Convert data frames in the list to data.table
+    xCurr <- lapply(xCurr, as.data.table)
+    
+    # Use Reduce with data.table::merge
+    ## ------------ Notes --------------  ##
+    ## The below 
+    ## ??
+    ## ------------ ----- --------------  ##
+    snsParasKgN <- Reduce(function(x, y) merge(x %>% distinct()
+                                               , y %>% distinct()
+                                               , by = c("rcFid_1km", "scen")
+                                               , all = TRUE, allow.cartesian = F), 
+                          xCurr)
+    head(snsParasKgN)
+    toc(log = T)
+    
+    # ## ------------ Notes --------------  ##
+    # ## The next bit is a back-up method in case the 'Reduce' function above does not work efficiently
+    # 
+    # # Set a chunk size (e.g., 100,000 rows per chunk)
+    # chunk_size <- 100000
+    # # get the first x amount of rcFids
+    # ## Get the length of unique 'rcFid_1km' values
+    # uniqueRcFid <- na.omit(unique(snsParas$rcFid_1km))
+    # totalLength <- length(uniqueRcFid)
+    # ### Create start sequence
+    # rcFidSeq <- seq(1, totalLength, by = chunk_size)
+    # ### Create end sequence (ensure the last chunk ends at total_length)
+    # rcFidSeq2 <- pmin(rcFidSeq + chunk_size - 1, totalLength)
+    # 
+    # # Loop over rcFidSeq
+    # for (i in seq_along(rcFidSeq)) {
+    #   
+    #   # Precompute the subset of uniqueRcFid for the current chunk
+    #   rcFidSubset <- uniqueRcFid[rcFidSeq[i]:rcFidSeq2[i]]
+    #   
+    #   # Loop over scenarios
+    #   for (sc in scensToRun) {
+    #     cat("scen:", sc, "|", "i:", i, "\n")
+    #     
+    #     # Pre-filter xCurr once for the scenario and rcFidSubset
+    #     xCurr_filtered <- lapply(xCurr, function(xx) {
+    #       xx[scen == sc & rcFid_1km %in% rcFidSubset]
+    #     })
+    #     head(xCurr_filtered)
+    #     
+    #     # Merge the filtered results using data.table's merge function
+    #     poutyMerged <- Reduce(function(x, y) merge(x, y, by = c("rcFid_1km", "scen")
+    #                                                , all = TRUE
+    #                                                , allow.cartesian = TRUE)
+    #                           , xCurr_filtered)
+    #     
+    #     # Start with the first element of xCurr_filtered as the initial merged result
+    #     poutyMerged <- xCurr_filtered[[1]]
+    #     # Loop through the remaining elements in xCurr_filtered (starting from the second element)
+    #     for (j in 2:length(xCurr_filtered)) {
+    #       cat(j, "|", dim(poutyMerged), "\n")
+    #       poutyMerged <- merge(poutyMerged, xCurr_filtered[[j]] %>% distinct(), 
+    #                            by = c("rcFid_1km", "scen"), 
+    #                            all = T, 
+    #                            allow.cartesian = TRUE)
+    #     }
+    #     
+    #     # Save the result as CSV
+    #     fwrite(poutyMerged, paste0("scenario/pm", sc, i, ".csv"), row.names = FALSE)
+    #   }
+    # }
+    # ## ------------ end back-up method --------------  ##
+    
+    tic("   ...snsParasKgN2")
+    # merge with crop data
+    snsParasKgN <- snsParasKgN %>%
+      # get total
+      mutate(totalNperKm = rowSums(select(., 3:last_col()), na.rm = T)) %>%
+      # merge back to spatial
+      merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
+    head(snsParasKgN)
+    toc(log = T)
+    
+    tic("   ...amount N per hectare")
+    # determine the amount per ha
+    snsParasKgN.aveHa <- snsParasKgN %>%
+      mutate(aveNperHa = totalNperKm / 100) %>%
+      st_drop_geometry() %>%
+      dplyr::select(aveNperHa) %>%
+      {quantile(.$aveNperHa, seq(0, 1, 0.1))}
+    snsParasKgN.aveHa
+    toc(log = T)
+    
+    ## ------------ Notes --------------  ##
+    ## The next bit uses the manure volume calculated from earlier
+    ## ------------ ----- --------------  ##
+    # stop("before manure into fertiliser")
+    tic("   ...manure and N")
+    ##### 7d3 - load in manure amounts, and the N you get from it, and reduce from fertiliser cost #####
+    snsParasKgNman <- snsParasKgN %>%
+      st_drop_geometry() %>%
+      merge(., kgNmanure %>% st_drop_geometry()) %>%
+      rename(kgN_fromManure = totalN
+             , kgNreq_fromFert = totalNperKm) %>%
+      distinct()
+    head(snsParasKgNman)
+    
+    ## get total N added by fertiliser (after removing N obtained from manure)
+    snsParasKgNman <- snsParasKgNman %>%
+      mutate(finalkgNfert = kgNreq_fromFert - kgN_fromManure) %>%
+      mutate(finalkgNfert = ifelse(finalkgNfert < 0, 0, finalkgNfert))
+    head(snsParasKgNman)
+    
+    # save
+    if(iscen == 1){ # (for original data)
+      cat("   ...saving", file.path(CropPath, "KgNapplied_fert.gpkg"), "\n")
+      st_write(snsParasKgNman, file.path(CropPath, "KgNapplied_fert.gpkg"), append = F, quiet = T)
+      fwrite(snsParasKgNman %>% st_drop_geometry(), file.path(CropPath, "KgNapplied_fert.csv"), row.names = F)
+      
+      # check how the data fit with national averages
+      # Fertiliser usage on farms: Results from the Farm Business Survey,
+      # England 2019/20 state that 109 is the average kg N ha-1
+      ## remove really low ones first
+      length(which(snsParasKgNman$finalkgNfert / 100 < 10))
+      finalkgNfertCheck <- snsParasKgNman$finalkgNfert[snsParasKgNman$finalkgNfert > 10]
+      hist(finalkgNfertCheck / 100)
+      
+      range(finalkgNfertCheck / 100, na.rm = T)
+      mean(finalkgNfertCheck / 100, na.rm = T)
+      median(finalkgNfertCheck / 100, na.rm = T)
+      
+    } else { # save (for scenario data)
+      cat("   ...saving", file.path(scenarioResultsPath
+                                    , paste0("KgNapplied_fert_", scenName, ".gpkg"))
+          , "\n")
+      st_write(snsParasKgNman, file.path(scenarioResultsPath
+                                         , paste0("KgNapplied_fert_", scenName, ".gpkg"))
+               , append = F, quiet = T)
+      fwrite(snsParasKgNman %>% st_drop_geometry(), file.path(scenarioResultsPath
+                                                              , paste0("KgNapplied_fert_", scenName, ".csv"))
+             , row.names = F)
+    }
+    toc(log = T)
+  }
   
-  # stop("before writing sns_and_crops_scens.gpkg")
-  snsParasWide3 <- bind_rows(snsParasWide3.allScens)
-  head(snsParasWide3)
-  
-  # save (for original data)
-  st_write(snsParasWide3 %>% 
-             filter(scen == "original_data") %>%
-             dplyr::select(-scen)
-           , file.path(CropPath, "sns_and_crops.gpkg"), append = F)
-  # save (for scenario data)
-  st_write(snsParasWide3 %>% 
-             filter(scen != "original_data")
-           , file.path(scenarioResultsPath, "sns_and_crops_scens.gpkg")
-           , append = F)
-  # save for all data
-  fwrite(st_drop_geometry(snsParasWide3), file.path(CropPath, "sns_and_crops.csv")
-         , row.names = F)
-  
-  # and with the derived SNS values
-  snsParas <- merge(snsParasWide3, snsCropParametersWide 
-                    , by = "threeParas"
-                    , all = T) %>%
-    dplyr::select(-c(contains(c("sns_"))))
-  head(snsParas)
-  unique(snsParas$scen)
+  # tidy
+  rm(rootDepthUK, separatedSoils, snsParasWide3.allScens
+     , animalGrid, fulldfLong, animalGridLong)
+  gc()
   
   # write readme
   sink(file = NULL)
@@ -5155,7 +5346,6 @@ if(part7fertiliserUse){
    Spatial extent: UK
    Temporal coverage: 2015
    Native projection: 27700")
-  
   sink(file = NULL)
   
   rm(snsParasWide3)
@@ -5166,174 +5356,6 @@ if(part7fertiliserUse){
   ## data and the scenario data
   ## ------------ ----- --------------  ##
   # stop("SNS and crops produced")
-  
-  ## add a df here that connects rcFid_1km and X and Y
-  ## ------------ Notes --------------  ##
-  ## use cropArea which has land cover as part of it
-  ## get centroids, then get X and Y
-  ## ------------ ----- --------------  ##
-  XYrcFid_1km <- cropArea %>% st_centroid()
-  XYrcFid_1km <- XYrcFid_1km %>%
-    mutate(X = as.integer(unlist(map(XYrcFid_1km$geom, 1))),
-           Y = as.integer(unlist(map(XYrcFid_1km$geom, 2)))) %>%
-    st_drop_geometry() %>%
-    dplyr::select(rcFid_1km, X, Y
-                  , ends_with("_ha"))
-  XYrcFid_1km <- rootDepthUK %>%
-    merge(., XYrcFid_1km)
-  head(XYrcFid_1km)
-  
-  # get all unique names
-  startCol <- which(colnames(snsParas) == "sns0_forage")
-  endCol <- which(colnames(snsParas) == "sns3_uncropped")
-  xCurr <- list()
-  
-  # tidy
-  rm(rootDepthUK, separatedSoils, snsParasWide3.allScens
-     , animalGrid, fulldfLong, animalGridLong)
-  gc()
-  
-  tic("xCurr")
-  cat("starting xCurr\n")
-  for(i in startCol:endCol){
-    
-    cat(i, nm <- colnames(snsParas)[i], "\n")
-    nmKg <- paste0(nm, "_kgN")
-    
-    # select only columns that match
-    # multiple the amount of N suggested to be applied with the amount of hectares of
-    # that crop type
-    xCurr[[i]] <- snsParas %>%
-      st_drop_geometry() %>%
-      dplyr::select(rcFid_1km, contains(nm), scen) %>%
-      mutate(total = .[, 2] * .[, 3]) %>%
-      dplyr::select(rcFid_1km, scen, total) %>%
-      rename(!!nmKg := total)
-  }
-  toc()
-  tic("xCurr2")
-  xCurr <- Filter(length, xCurr) # only get filled objects
-  toc()
-  
-  # merge all together
-  tic("snsParasKgN")
-  # Convert data frames in the list to data.table
-  xCurr <- lapply(xCurr, as.data.table)
-  
-  # Use Reduce with data.table::merge
-  snsParasKgN <- Reduce(function(x, y) merge(x %>% distinct()
-                                             , y %>% distinct()
-                                             , by = c("rcFid_1km", "scen")
-                                             , all = TRUE, allow.cartesian = F), 
-                        xCurr)
-  head(snsParasKgN)
-  
-  # ## ------------ Notes --------------  ##
-  # ## The next bit is a back-up method in case the 'Reduce' function above does not work efficiently
-  # 
-  # # Set a chunk size (e.g., 100,000 rows per chunk)
-  # chunk_size <- 100000
-  # # get the first x amount of rcFids
-  # ## Get the length of unique 'rcFid_1km' values
-  # uniqueRcFid <- na.omit(unique(snsParas$rcFid_1km))
-  # totalLength <- length(uniqueRcFid)
-  # ### Create start sequence
-  # rcFidSeq <- seq(1, totalLength, by = chunk_size)
-  # ### Create end sequence (ensure the last chunk ends at total_length)
-  # rcFidSeq2 <- pmin(rcFidSeq + chunk_size - 1, totalLength)
-  # 
-  # # Loop over rcFidSeq
-  # for (i in seq_along(rcFidSeq)) {
-  #   
-  #   # Precompute the subset of uniqueRcFid for the current chunk
-  #   rcFidSubset <- uniqueRcFid[rcFidSeq[i]:rcFidSeq2[i]]
-  #   
-  #   # Loop over scenarios
-  #   for (sc in scensToRun) {
-  #     cat("scen:", sc, "|", "i:", i, "\n")
-  #     
-  #     # Pre-filter xCurr once for the scenario and rcFidSubset
-  #     xCurr_filtered <- lapply(xCurr, function(xx) {
-  #       xx[scen == sc & rcFid_1km %in% rcFidSubset]
-  #     })
-  #     head(xCurr_filtered)
-  #     
-  #     # Merge the filtered results using data.table's merge function
-  #     poutyMerged <- Reduce(function(x, y) merge(x, y, by = c("rcFid_1km", "scen")
-  #                                                , all = TRUE
-  #                                                , allow.cartesian = TRUE)
-  #                           , xCurr_filtered)
-  #     
-  #     # Start with the first element of xCurr_filtered as the initial merged result
-  #     poutyMerged <- xCurr_filtered[[1]]
-  #     # Loop through the remaining elements in xCurr_filtered (starting from the second element)
-  #     for (j in 2:length(xCurr_filtered)) {
-  #       cat(j, "|", dim(poutyMerged), "\n")
-  #       poutyMerged <- merge(poutyMerged, xCurr_filtered[[j]] %>% distinct(), 
-  #                            by = c("rcFid_1km", "scen"), 
-  #                            all = T, 
-  #                            allow.cartesian = TRUE)
-  #     }
-  #     
-  #     # Save the result as CSV
-  #     fwrite(poutyMerged, paste0("scenario/pm", sc, i, ".csv"), row.names = FALSE)
-  #   }
-  # }
-  # ## ------------ end back-up method --------------  ##
-  
-  toc(log = T)
-  head(snsParasKgN)
-  unique(snsParasKgN$scen)
-  
-  tic("snsParasKgN2")
-  # merge with crop data
-  snsParasKgN <- snsParasKgN %>%
-    # get total
-    mutate(totalNperKm = rowSums(select(., 3:last_col()), na.rm = T)) %>%
-    # merge back to spatial
-    merge(XYrcFid_1km %>% dplyr::select(X, Y, rcFid_1km), .)
-  head(snsParasKgN)
-  toc(log = T)
-  unique(snsParasKgN$scen)
-  
-  tic("amount N per hectare")
-  # determine the amount per ha
-  snsParasKgN.aveHa <- snsParasKgN %>%
-    mutate(aveNperHa = totalNperKm / 100) %>%
-    st_drop_geometry() %>%
-    dplyr::select(aveNperHa) %>%
-    {quantile(.$aveNperHa, seq(0, 1, 0.1))}
-  snsParasKgN.aveHa
-  toc(log = T)
-  
-  ## ------------ Notes --------------  ##
-  ## at this stage, the 'snsParasKgN' df contains 
-  ## original data and the scenario data, identified by the 'scen' column
-  ## ------------ ----- --------------  ##
-  
-  tic("manure and N - original data")
-  #### load in manure amounts, and the N you get from it, and reduce from fertiliser cost ####
-  kgNmanure <- st_read(file.path("results", "animals", "spatialN1km_kgN.gpkg"))
-  head(kgNmanure)
-  snsParasKgNman <- snsParasKgN %>%
-    # reduce to just original data
-    filter(scen == "original_data") %>%
-    st_join(., kgNmanure %>% dplyr::select(-c(rcFid_1km))) %>%
-    rename(kgN_fromManure = totalN
-           , kgNreq_fromFert = totalNperKm)
-  head(snsParasKgNman)
-  
-  ## get total N added by fertiliser (after removing N obtained from manure)
-  snsParasKgNman <- snsParasKgNman %>%
-    mutate(finalkgNfert = kgNreq_fromFert - kgN_fromManure) %>%
-    mutate(finalkgNfert = ifelse(finalkgNfert < 0, 0, finalkgNfert))
-  head(snsParasKgNman)
-  unique(snsParasKgNman$scen)
-  toc(log = T)
-  
-  # write
-  st_write(snsParasKgNman, file.path(CropPath, "KgNapplied_fert.gpkg"), append = F)
-  fwrite(snsParasKgNman %>% st_drop_geometry(), file.path(CropPath, "KgNapplied_fert.csv"), row.names = F)
   
   # write readme
   sink(file = NULL)
@@ -5359,140 +5381,79 @@ if(part7fertiliserUse){
    Spatial extent: UK
    Temporal coverage: 2015
    Native projection: 27700")
-  
   sink(file = NULL)
   
-  # check how the data fit with national averages
-  # Fertiliser usage on farms: Results from the Farm Business Survey,
-  # England 2019/20 state that 109 is the average kg N ha-1
-  ## remove really low ones first
-  length(which(snsParasKgNman$finalkgNfert / 100 < 10))
-  finalkgNfertCheck <- snsParasKgNman$finalkgNfert[snsParasKgNman$finalkgNfert > 10]
-  hist(finalkgNfertCheck / 100)
-  
-  range(finalkgNfertCheck / 100, na.rm = T)
-  mean(finalkgNfertCheck / 100, na.rm = T)
-  median(finalkgNfertCheck / 100, na.rm = T)
-  
-  # stop("fert scenarios")
-  #### scenario - load in manure amounts, and the N you get from it, and reduce from fertiliser cost ####
-  ## ------------ Notes --------------  ##
-  ## for this scenario section, the 'snsParasKgN' df can be used to go through 
-  ## each scenario. For each scen, the specific 'kgNmanure' needs to be read in
-  ## ------------ ----- --------------  ##
-  
-  snsParasKgNman.scen <- snsParasKgN %>%
-    group_split(scen)
-  class(snsParasKgNman.scen)
-  class(snsParasKgNman.scen[[1]])
-  head(snsParasKgNman.scen[[1]])
-  
-  # load in all the animal grids for the scenarios
-  for(iscen in snsParasKgNman.scen){
-    # print(class(iscen))
-    tic("scenario run - manure and N")
-    # get scenario name
-    nmscen <-unique(iscen$scen)
-    cat("... Starting", nmscen, "...\n")
-    # ignore original data, as that went before
-    if(nmscen == "original_data"){
-      cat("Original data already processed above\n")
-    } else {
-      ## use the name to get filter total possible fertiliser, and to read the specific manure output
-      nmmanure <- file.path("scenario", "results"
-                            , paste0("spatialN1km_kgN", nmscen, ".gpkg"))
-      ## filter fert
-      snsParasKgNman.scen <- snsParasKgN %>%
-        ### reduce to just scenario data
-        filter(scen == nmscen) %>%
-        st_join(., kgNmanure %>% dplyr::select(-c(rcFid_1km))) %>%
-        rename(kgN_fromManure = totalN
-               , kgNreq_fromFert = totalNperKm)
-      head(snsParasKgNman.scen)
-      
-      ## load in manure (scenario specific)
-      kgNmanure.scen <- st_read(nmmanure)
-      head(kgNmanure.scen)
-      
-      ## get total N added by fertiliser (after removing N obtained from manure)
-      snsParasKgNman.scen2 <- snsParasKgNman.scen %>%
-        mutate(finalkgNfert = kgNreq_fromFert - kgN_fromManure) %>%
-        mutate(finalkgNfert = ifelse(finalkgNfert < 0, 0, finalkgNfert))
-      head(snsParasKgNman.scen2)
-      toc(log = T)
-      
-      # write
-      st_write(snsParasKgNman.scen2
-               , file.path(scenarioResultsPath
-                           , paste0("KgNapplied_fert", nmscen, ".gpkg"))
-               , append = F)
-      fwrite(snsParasKgNman.scen2 %>% st_drop_geometry()
-             , file.path(scenarioResultsPath
-                         , paste0("KgNapplied_fert", nmscen, ".csv")), row.names = F)
-      toc(log = T)
-    } # if / else "original_data"
-  }
-  
-  #### 7c - determine emissions factors for fertiliser use ####
-  rm(list=setdiff(ls(), c("CropPath", "savePath", "snsParasKgNman"
-                          , "scenarios", "scenarioResultsPath"
-                          , "XYrcFid_1km", "gwpN2O","gwpCH4"
-                          , "cropSoilRain", "soils", objKeep)))
+  # stop("before 7e")
+  # filter, to keep coefs
+  coefKeep <- ls()[grep("coef", ls(), ignore.case = T)]
+  # rm(list=setdiff(ls(), c("CropPath", "savePath", "snsParasKgNman"
+  #                         , "scenarios", "scenarioResultsPath"
+  #                         , "fertiliserFactors"
+  #                         , "XYrcFid_1km", "gwpN2O","gwpCH4"
+  #                         , "cropSoilRain", "soils"
+  #                         , objKeep, coefKeep)))
+  rm(list = ls(pattern = "^sns|^lime|^XYr")) # Removes all objects whose name starts with strings
+  rm(M, m2, m3) # Removes matrices
+  rm(cropsMapIn, cropSoils, xCurr) # Removes crops
   gc()
-  # stop("noice")
   
-
-  #### 7d - calculate emissions from fertiliser use ####
+  
+  #### 7e - calculate emissions from fertiliser use ####
   ## ------------ Notes --------------  ##
-  ## All the emissions factors noted in section 3 require to be summed together, following 
+  ## All the emissions factors noted in section 7 require to be summed together, following 
   ## Bouwman et al. (2002). The way described above was the original way to
-  ## calculate it (i.e. found in the CFT), and is the focus of section '4A'
+  ## calculate it (i.e. found in the CFT), and is the focus of section '7e'
   ## ------------ ----- --------------  ##
   
-  ###### 7d1 - N2O background ######
+  ###### 7e1 - N2O background ######
   # determine L_back_direct from eq. 2.3.3b in CFT
   # these are termed as 'background N2O emissions' in CFT and
   # are based on the emission factors from classes of:
   # crop type, soil texture, soc, cec, pH, drainage, and application method
   # note application method for N2O is 0, so can be ignored
   
-  # load in crop area - for the 'original data'
-  cropArea.original <- st_read(file.path(CropPath, "sns_and_crops.gpkg")) %>%
-    dplyr::select(-c(rcFid_1km, X, Y)) %>%
-    st_join(fertiliserFactors) %>%
-    mutate(scen = "original_data") 
-  head(cropArea.original)
-  # load in crop area - for the scenario data
-  cropArea.scens <- st_read(file.path(scenarioResultsPath, "sns_and_crops_scens.gpkg")) %>%
-    dplyr::select(-c(rcFid_1km, X, Y)) %>%
-    st_join(fertiliserFactors)
-  head(cropArea.scens)
-  
-  # combine both
-  cropArea.combined <- bind_rows(cropArea.scens
-                                 , cropArea.original)
-  
-  head(fertiliserFactors)
-  
-  # stop("this is point at which the scenarios need to be calculated separately")
-  rm(fertClasses, fertClassesDirect, fertClassesSplit)
-  gc()
-  
-  # split the df based on scen
-  cropArea.split <- cropArea.combined %>%
-    group_split(scen)
-  rm(cropArea.combined)
-  
-  # stop("before iscen - 5413")
-  
-  for(iscen in cropArea.split){
-    tic("scenario run - fertiliser and N")
-    # get scenario name
-    nmscen <-unique(iscen$scen)
-    cat("... Starting", nmscen, "...\n")
+  for(iscen in 1:(length(scenarios) + 1)){
+    
+    # if 'iscen' is 1, use 2015 data
+    if(iscen == 1){
+      cat("Starting 2015 data for SNS emissions...\n")
+      # set input location - for land cover
+      currPath <- file.path("./data_in", "land_cover")
+      # for crops
+      CropPath <- "./data_in/crops"
+      # set output location
+      savePath <- file.path("./results", "arable")
+      
+      # import 1 km2 crop area for 2015
+      SNSMapIn <-st_read(file.path(CropPath, "sns_and_crops.gpkg"), quiet = T) %>%
+        dplyr::select(-c(rcFid_1km, X, Y)) %>%
+        st_join(fertiliserFactors)
+      head(SNSMapIn)
+      
+      # load manure
+      snsParasKgNman <- fread(file.path(CropPath, "KgNapplied_fert.csv"))
+      
+    } else { # if > 1, use the scenarios
+      scenName <- gsub(".gpkg", "", basename(scenarios[iscen-1]))
+      cat("Starting", scenName, "data for SNS emissions...\n")
+      
+      # import 1 km2 crop area for scens
+      SNSMapIn <-st_read(file.path(scenarioResultsPath, paste0("sns_and_crops_", scenName, ".gpkg"))
+                         , quiet = T) %>%
+        dplyr::select(-c(rcFid_1km, X, Y)) %>%
+        st_join(fertiliserFactors)
+      head(SNSMapIn)
+      
+      # load manure
+      snsParasKgNman <- fread(file.path(scenarioResultsPath
+                                        , paste0("KgNapplied_fert_", scenName, ".csv"))
+      )
+    }
     
     # group the things that do not change in a 1 km2 cell (i.e. all but crop type)
-    fertClasses <- iscen %>%
+    fertClasses <- SNSMapIn %>%
+      relocate(rcFid_1km) %>%
+      st_drop_geometry() %>%
       # soil texture
       mutate(textureValue = if_else(textureCat == "fine", textureCoefs[["fine1"]]
                                     , if_else(textureCat == "medium", textureCoefs[["medium1"]]
@@ -5525,9 +5486,9 @@ if(part7fertiliserUse){
     # Replace NA values with 0 only in numeric columns
     fertClasses <- fertClasses %>%
       mutate(across(where(is.numeric), ~ replace_na(., 0)))
-    
     head(fertClasses)
     
+    cat("   ...starting fertClassesSplit...\n")
     # deal with the different crops in the same cell separately
     fertClassesSplit <- fertClasses %>%
       # where otherUplandHa is present, calculate summed factors
@@ -5556,7 +5517,8 @@ if(part7fertiliserUse){
                     , improved_grass_ha, backgN20_kgkm2) 
     head(fertClassesSplit)
     
-    ###### 7d2 - N2O direct ######
+    ###### 7e2 - N2O direct ######
+    cat("   ...starting N2O direct [2.3.3a]...\n")
     # determine L_direct from eq. 2.3.3a in CFT
     # these are termed as 'direct N2O emissions' in CFT and
     # are based on the emission factors from classes of (in addition to the ones for
@@ -5625,25 +5587,35 @@ if(part7fertiliserUse){
                     , directN20_kgkm2) 
     head(fertClassesDirect)
     
-    ###### 7d3 - N2O direct and background ######
+    ###### 7e3 - N2O direct and background ######
+    cat("   ...starting N2O direct and background [2.3.3b]...\n")
     fertN2ODirBackg <- fertClassesDirect %>%
       dplyr::select(rcFid_1km, directN20_kgkm2) %>%
       merge(., fertClassesSplit %>% dplyr::select(rcFid_1km, backgN20_kgkm2) %>%
               st_drop_geometry())
     head(fertN2ODirBackg)
     
-    ###### 7d4 - NO direct ######
+    ###### 7e4 - NO direct ######
+    cat("   ...starting NO direct [2.3.3a]...\n")
     # NO is calculated in the same way N2O direct, but requires fewer factors: only
     # application rate, fertiliser type, soc, and drainage
     # group the things that do not change in a 1 km2 cell
     
-    # separate iscen into SNs and other factors required for NO calculation
-    iscenSNS <- iscen %>% dplyr::select(scen:rcFid_1km) %>% st_drop_geometry()
-    iscenVars <- iscen %>% dplyr::select(scen, X:socCat) %>% st_drop_geometry()
+    # From CFT: 'Emissions of NO are also modelled using the same functional form as in
+    # equation 2.3.3b and a conversion factor of 0.01 is used to calculate the
+    # resulting N2O.'
     
-    fertClasses <- iscenVars %>% distinct() %>%
+    # separate SNSMapIn into SNs and other factors required for NO calculation
+    ## ensure correct order
+    SNSMapIn <- SNSMapIn %>%
+      relocate(rcFid_1km, x, y) %>%
+      # remove sns
+      dplyr::select(-c(matches("^sns")))
+    
+    fertClasses <- SNSMapIn %>% distinct() %>%
       # Replace NA values with 0 only in numeric columns
       mutate(across(where(is.numeric), ~ replace_na(., 0))) %>%
+      st_drop_geometry() %>%
       
       # Calculate socValue with case_when for readability and efficiency
       mutate(
@@ -5655,27 +5627,36 @@ if(part7fertiliserUse){
         )
         , drainValue = drainageCoefs[[2]]
         , fertValueSolution = fertiliserCoefs[["nitrateSol2"]]
-      ) %>%
+        , .keep = "unused") %>%
       
       # Calculate sumN2Ofactors using a consolidated select statement
-      mutate(sumN2Ofactors = rowSums(dplyr::select(., socValue:drainValue))) %>%
-      
-      # Join snsParasKgNman and calculate combined N values
-      left_join(snsParasKgNman %>% st_drop_geometry() %>% distinct(), by = c("scen", "rcFid_1km", "X", "Y")) %>%
+      mutate(sumN2Ofactors = rowSums(dplyr::select(., socValue, drainValue)))
+    head(fertClasses)
     
-    mutate(
-      NforOtherUp = rowSums(dplyr::select(., contains(c("maize_kgN", "winterwheat_kgN"
-                                                        , "springwheat_kgN", "winterbarley_kgN"
-                                                        , "springbarley_kgN"
-                                                        , "potatoes_kgN", "sugarbeet_kgN"
-                                                        , "osr_kgN", "forage_kgN")))) / 100,
-      NforBeans = rowSums(dplyr::select(., contains("beans_kgN"))) / 100,
-      NforGrass = rowSums(dplyr::select(., contains("uncropped_kgN"))) / 100
-    ) %>%
+    fc2 <- fertClasses %>%
+      # Join snsParasKgNman and calculate combined N values
+      left_join(snsParasKgNman %>% st_drop_geometry() %>%
+                  # remove sns
+                  dplyr::select(-c(matches("^sns")))
+                , by = c("rcFid_1km")) %>%
+      # sum all N required for certain categories of plant (crop)
+      ## and then remove the columns that were included in the calculations
+      mutate(
+        NforOtherUp = rowSums(dplyr::select(., contains(c("maize_kgN", "winterwheat_kgN"
+                                                          , "springwheat_kgN", "winterbarley_kgN"
+                                                          , "springbarley_kgN"
+                                                          , "potatoes_kgN", "sugarbeet_kgN"
+                                                          , "osr_kgN", "forage_kgN")))) / 100,
+        NforBeans = rowSums(dplyr::select(., contains("beans_kgN"))) / 100,
+        NforGrass = rowSums(dplyr::select(., contains("uncropped_kgN"))) / 100
+        , .keep = "unused") %>%
+      # sum total area (ha) for 'other upland' crops
+      ## and then remove the columns that were included in the calculations
       mutate(
         otherUplandHa = rowSums(dplyr::select(., oats_ha, sugarbeet_ha, maize_ha
                                               , winterwheat_ha, winterbarley_ha, springwheat_ha
-                                              , springbarley_ha, potato_ha, rapeseed_ha))) %>%
+                                              , springbarley_ha, potato_ha, rapeseed_ha))
+        , .keep = "unused") %>%
       # Calculate interaction terms
       mutate(
         NrateFertInterOU = fertValueSolution * NforOtherUp,
@@ -5702,44 +5683,52 @@ if(part7fertiliserUse){
         summedOUtotal = exp(summedOUSol - 1.527),
         summedLegumestotal = exp(summedLegumesSol - 1.527),
         summedGrasstotal = exp(summedGrassSol - 1.527),
-        directN0_kgkm2 = (summedOUtotal * otherUplandHa) + (summedLegumestotal * fieldbeans_ha) + (summedGrasstotal * improved_grass_ha),
+        directN0_kgkm2 = (summedOUtotal * otherUplandHa) + 
+          (summedLegumestotal * fieldbeans_ha) + 
+          (summedGrasstotal * improved_grass_ha),
         N2O_kgkm_fromNO = directN0_kgkm2 * 0.01
-      ) %>%
-      
-      dplyr::select(rcFid_1km, otherUplandHa, summedOUtotal, fieldbeans_ha, summedLegumestotal, improved_grass_ha, summedGrasstotal, directN0_kgkm2, N2O_kgkm_fromNO)
+      ) %>% 
+      dplyr::select(rcFid_1km, otherUplandHa, summedOUtotal
+                    , fieldbeans_ha, summedLegumestotal
+                    , improved_grass_ha, summedGrasstotal
+                    , directN0_kgkm2, N2O_kgkm_fromNO)
     
     # View the result
-    head(fertClasses)
+    head(fc2)
     
-    
-    ###### 7d5 - N2O direct and background and from NO ######
+    ###### 7e5 - N2O direct and background and from NO ######
+    cat("   ...starting NO direct and background [2.3.3b]...\n")
     fertN2Os <- fertN2ODirBackg %>%
-      merge(., fertClasses %>% dplyr::select(rcFid_1km, N2O_kgkm_fromNO) %>%
+      merge(., fc2 %>% dplyr::select(rcFid_1km, N2O_kgkm_fromNO) %>%
               st_drop_geometry())
     head(fertN2Os)
     
-    ###### 7d6 - NH3 from volatisation ######
+    ###### 7e6 - NH3 from volatisation ######
+    cat("   ...starting NH3 from volatisation [2.3.4]...\n")
     # NH3 is calculated in a similar way to N2O direct, but requires fewer factors: 
     # crop type, soil texture, cec, pH, drainage, fertiliser type, and application method
     
     # group the things that do not change in a 1 km2 cell (i.e. all but crop type)
-    fertClassesNH3 <- iscen %>%
+    fertClassesNH3 <- SNSMapIn %>% st_drop_geometry() %>% relocate(rcFid_1km) %>%
       # Replace NA values with 0 only in numeric columns
       mutate(across(where(is.numeric), ~ replace_na(., 0))) %>%
       # soil texture
       mutate(textureValue = if_else(textureCat == "fine", textureCoefs[["fine3"]]
                                     , if_else(textureCat == "medium", textureCoefs[["medium3"]]
-                                              , textureCoefs[["course3"]]))) %>%
+                                              , textureCoefs[["course3"]]))
+             , .keep = "unused") %>%
       # cec
       mutate(cecValue = if_else(cecCat == "low CEC", cecCoefs[["low_CEC3"]]
                                 , if_else(cecCat == "low-mod CEC", cecCoefs[["low_modCEC3"]]
                                           , if_else(cecCat == "high-mod CEC", cecCoefs[["high_modCEC3"]]
-                                                    , cecCoefs[["highCEC3"]])))) %>%
+                                                    , cecCoefs[["highCEC3"]])))
+             , .keep = "unused") %>%
       # ph
       mutate(phValue = if_else(phCat == "low pH", phCoefs[["low_ph3"]]
                                , if_else(phCat == "low-mod pH", phCoefs[["low_modph3"]]
                                          , if_else(phCat == "high-mod pH", phCoefs[["high_modph3"]]
-                                                   , phCoefs[["highph3"]])))) %>%
+                                                   , phCoefs[["highph3"]])))
+             , .keep = "unused") %>%
       # drainage
       mutate(drainValue = drainageCoefs[[3]]) %>%
       # application method
@@ -5747,24 +5736,23 @@ if(part7fertiliserUse){
       # fertiliser type
       mutate(fertValue = fertiliserCoefs[["nitrateSol3"]]) %>%
       # sum all the outcomes
-      mutate(sumNH3factors = rowSums(dplyr::select(.[,,drop = T], c(textureValue:fertValue))))
+      mutate(sumNH3factors = rowSums(dplyr::select(., c(textureValue:fertValue))))
     head(fertClassesNH3)
     
     # deal with the different crops in the same cell separately
     fertClassesNH3crop <- fertClassesNH3 %>%
       ## get total crop area of either grass (uncropped), legumes (beans), or other
-      mutate(otherUplandHa = rowSums(dplyr::select(.[,,drop = T], c(oats_ha, sugarbeet_ha
-                                                                    , maize_ha, winterwheat_ha
-                                                                    , winterbarley_ha, springwheat_ha
-                                                                    , springbarley_ha
-                                                                    , potato_ha, rapeseed_ha)))) %>%
+      mutate(otherUplandHa = rowSums(dplyr::select(., c(oats_ha, sugarbeet_ha
+                                                        , maize_ha, winterwheat_ha
+                                                        , winterbarley_ha, springwheat_ha
+                                                        , springbarley_ha
+                                                        , potato_ha, rapeseed_ha)))) %>%
       # where otherUplandHa is present, calculate summed factors
       mutate(summedOU = if_else(otherUplandHa > 0, cropTypeCoefs[["other_upland3"]] + sumNH3factors, 0)
              # where beans are present, calculate summed factors
              , summedLegumes = if_else(fieldbeans_ha > 0, cropTypeCoefs[["legumes3"]] + sumNH3factors, 0)
              # where grass is present, calculate summed factors
-             , summedGrass = if_else(improved_grass_ha > 0, cropTypeCoefs[["grass3"]] + sumNH3factors, 0)
-      ) %>%
+             , summedGrass = if_else(improved_grass_ha > 0, cropTypeCoefs[["grass3"]] + sumNH3factors, 0)) %>%
       # add constant, k, and then exponential
       mutate(summedOUtotal = exp(summedOU)
              , summedLegumestotal = exp(summedLegumes)
@@ -5775,9 +5763,10 @@ if(part7fertiliserUse){
       ## Therefore, the exact amount of N per ha needs to be determined. This can be done
       ## by back-calculating the SNS classes
       ## ------------ ----- --------------  ##
-      st_join(., snsParasKgNman %>% dplyr::select(-c(X, Y, rcFid_1km))) %>%
+      merge(., snsParasKgNman) %>%
       dplyr::select(c(rcFid_1km, threeParas
-                      , oats_ha, maize_ha, winterwheat_ha, winterbarley_ha, springwheat_ha, springbarley_ha, otherUplandHa
+                      , oats_ha, maize_ha, winterwheat_ha, winterbarley_ha
+                      , springwheat_ha, springbarley_ha, otherUplandHa
                       , potato_ha, rapeseed_ha, fieldbeans_ha, improved_grass_ha, sugarbeet_ha
                       , contains(c("sns0_", "sns1_", "sns2_", "sns4_")))
                     , summedOUtotal, summedLegumestotal, summedGrasstotal) %>%
@@ -5845,6 +5834,7 @@ if(part7fertiliserUse){
     head(fertN2Os)
     
     ###### 7d8 - NH3 from leaching ######
+    cat("   ...starting NH3 from leaching [2.3.6]...\n")
     # EQUATION 11.11 in IPCC (2019)
     # sum(A (fertiliser rate [kg N]) * FracGASF (leaching fraction [Volatilisation from synthetic fertiliser]))
     # FracGASF is 0.08, according to Table 11.3 in IPCC (2019)
@@ -5858,6 +5848,7 @@ if(part7fertiliserUse){
     head(leachingNH3)
     
     ###### 7d9 - N2O from NO, NH3 (volatisation), leaching ######
+    cat("   ...combining fertiliser emissions...\n")
     fertN2Os <- fertN2Os %>%
       merge(., leachingNH3 %>% dplyr::select(rcFid_1km, kgN2O_N_leach) %>%
               st_drop_geometry())
@@ -5866,16 +5857,18 @@ if(part7fertiliserUse){
     fertN2Os_N2O <- fertN2Os %>%
       mutate(across(directN20_kgkm2:kgN2O_N_leach, ~ . * 44/28, .names = "finN2O_{.col}")) %>%
       # get final value for combination of background and direct emissions, from volatisation, and from leaching
-      mutate(totalN20_kgkm2 = finN2O_directN20_kgkm2 + finN2O_N2O_kgkm_fromNO + finN2O_N2O_kgkm2_fromNH3 + finN2O_kgN2O_N_leach) %>%
+      mutate(totalN20_kgkm2 = finN2O_directN20_kgkm2 + finN2O_N2O_kgkm_fromNO + 
+               finN2O_N2O_kgkm2_fromNH3 + finN2O_kgN2O_N_leach) %>%
       # to get the amount in CO2e, times by 265
       mutate(totalCO2e_kgkm2 = totalN20_kgkm2 * gwpN2O)
     
     # add liming CO2e values in
-    if(nmscen == "original_data"){
-      liming <- st_read(file.path(savePath, "liming_eval.gpkg"))
+    # if 'iscen' is 1, use 2015 data
+    if(iscen == 1){
+      liming <- st_read(file.path(savePath, "liming_eval.gpkg"), quiet = T)
     } else {
       liming <- st_read(file.path(scenarioResultsPath
-                                  , paste0("liming_eval", nmscen, ".gpkg")))
+                                  , paste0("liming_eval", scenName, ".gpkg")), quiet = T)
     }
     fertCO2e <- fertN2Os_N2O %>%
       merge(., liming %>% st_drop_geometry()) %>%
@@ -5888,22 +5881,23 @@ if(part7fertiliserUse){
     head(fertCO2e)
     
     # write
-    if(nmscen == "original_data"){
-      st_write(fertCO2e, xSave <- file.path(savePath, "fertiliser_emissions.gpkg"), append = F)
+    # if 'iscen' is 1, use 2015 data
+    if(iscen == 1){
+      st_write(fertCO2e, xSave <- file.path(savePath, "fertiliser_emissions.gpkg"), append = F, quiet = T)
       fwrite(fertCO2e %>% st_drop_geometry(), file.path(savePath, "fertiliser_emissions.csv"), row.names = F)
     } else { # scenario data
       st_write(fertCO2e, xSave <- file.path(scenarioResultsPath
-                                            , paste0("fertiliser_emissions", nmscen, ".gpkg"))
+                                            , paste0("fertiliser_emissions", scenName, ".gpkg"))
+               , quiet = T
                , append = F)
       fwrite(fertCO2e %>% st_drop_geometry()
              , file.path(scenarioResultsPath
-                         , paste0("fertiliser_emissions", nmscen, ".csv"))
+                         , paste0("fertiliser_emissions", scenName, ".csv"))
              , row.names = F)
     }
-    cat("saved the final fertiliser CO2e product:"
+    cat("      ...saved the final fertiliser CO2e product:"
         , xSave, "\n\n")
-    
-  }
+  } # end of scenarios
   
   # write readme
   sink(file = NULL)
@@ -7693,7 +7687,14 @@ Data:
   sink(file = NULL)
 }
 
-#### 11 - part11combineemissions ####
+#### 11 - part11combineemissions ####]
+## ------------ Notes --------------  ##
+## In this section, all emissions are combined.
+## Where the reference input file is a '.csv', the calculations are carried 
+## out below based on regional animal values
+## Where the suffix is '.gpkg' spatial values were calculated above
+## ------------ ----- --------------  ##
+
 if(part11combineemissions){
   
   # stop("part11")
@@ -7719,7 +7720,8 @@ if(part11combineemissions){
     # print(ukRegionsPossible)
     
     x <- ukRegionsPossible[[1]]
-    print(x)
+    # print(x)
+    cat("      ...ensuring names and columns match\n")
     
     # split by regions current region
     regSplit <- pblapply(ukRegionsPossible, function(x){
@@ -7832,337 +7834,454 @@ if(part11combineemissions){
     return(anrTimesbind)
   } # end of multiplying transposing function
   
-  # get current relevant paths
-  currPath <- file.path("data_in", "animals")
-  resultsPath <- file.path("results")
   
-  ##### 11a - load grids - animals and land cover - with regions #####
-  gridAnimals.original <- st_read(file.path(currPath, "all_animals_1km.gpkg")) %>%
-    st_drop_geometry()
-  reg <- st_read(file.path(currPath, "nonBovine_grid_2020_1km.gpkg")) %>% dplyr::select(rcFid_1km, region) %>% st_drop_geometry()
-  gridAnimals.original <- gridAnimals.original %>%
-    merge(., reg) %>% # merge, to get region
-    relocate(rcFid_1km, region)
-  head(gridAnimals.original)
-  head(reg)
-  
-  # convert non-england regions to 'other' - to match original cow regions
-  gridAnimals.original$region <- ifelse(gridAnimals.original$region %in% 
-                                          c("Highlands and Islands", "Mid and West Wales"
-                                            , "West Scotland", "South Scotland", "North Wales"
-                                            , "Mid Scotland and Fife", "South Wales West"
-                                            , "Glasgow", "Central Scotland", "South Wales Central", "Lothian"
-                                            , "North East Scotland", "South Wales East")
-                                        , "other", gridAnimals.original$region)
-  
-  # add underscores to regions, to make them match output df
-  gridAnimals.original$region <- gsub(" ", "_", gridAnimals.original$region)
-  # and make London the same as South East
-  gridAnimals.original$region <- ifelse(gridAnimals.original$region == "London", "South_East"
-                                        , gridAnimals.original$region)
-  # convert the humber, to match excrete N df
-  gridAnimals.original$region <- ifelse(gridAnimals.original$region == "Yorkshire_and_The_Humber"
-                                        , "Yorkshire_and_the_Humber"
-                                        , gridAnimals.original$region)
-  unique(gridAnimals.original$region)
-  head(gridAnimals.original)
-  
-  gridLand.original <- st_read(file.path("data_in", "land_cover", "land_cover_area.gpkg")) %>%
-    st_drop_geometry() %>%
-    merge(ghgGridGB, .) %>%
-    merge(gridAnimals.original %>% dplyr::select(region, rcFid_1km) %>% st_drop_geometry(), .)
-  head(gridLand.original)
-  
-  #### 11b - enteric fermentation ####
-  # load in enteric fermentation - a per-animal emission value
-  entFerm <- fread(file.path(resultsPath, "animals", "entericFermCH4CO2e.csv"))
-  head(entFerm)
-  
-  # run through the transposing multiplication function
-  totalEntFerm <- regionsTranspose(griddf = gridAnimals.original
-                                   , rSel = entFerm
-                                   , finalCol = "kgCO2e_entferm"
-                                   , colofInterest = "kgCO2.50pcScen")
-  head(totalEntFerm)
-  class(totalEntFerm)
-  
-  ###### add to final dataframe ######
-  ghgGridResults <- totalEntFerm %>% dplyr::select(rcFid_1km, kgCO2e_entferm) %>%
-    merge(ghgGridGB, .
-          , by = "rcFid_1km")
-  head(ghgGridResults)
-  plot(ghgGridResults[1])
-  
-  #### 11c - manure management ####
-  # load in manure management - a per-animal emission value - it is a value for 6 months (indoors)
-  manMgmt <- fread(file.path(resultsPath, "animals", "sixMonthMMCO2e.csv"))
-  head(manMgmt)
-  
-  # run through the transposing multiplication function
-  totalmanMgmt <- regionsTranspose(griddf = gridAnimals.original
-                                   , rSel = manMgmt
-                                   , finalCol = "kgCO2e_manMgmt"
-                                   , colofInterest = "MMkgCO2e6MnIn")
-  head(totalmanMgmt)
-  
-  ###### add to final dataframe ######
-  ghgGridResults <- totalmanMgmt %>% dplyr::select(rcFid_1km, kgCO2e_manMgmt) %>%
-    merge(ghgGridResults, .
-          , by = "rcFid_1km")
-  head(ghgGridResults)
-  
-  #### 11d - animal excretions ####
-  # load in animal excretions - a per-animal emission value
-  excrete <- fread(file.path(resultsPath, "animals", "annual_grazing_emissions.csv"))
-  head(excrete)
-  
-  # run through the transposing multiplication function
-  totalexcrete <- regionsTranspose(griddf = gridAnimals.original
-                                   , rSel = excrete
-                                   , finalCol = "kgCO2e_excrete"
-                                   , colofInterest = "grazEmisYr_kgCO2e")
-  head(totalexcrete)
-  
-  ###### add to final dataframe ######
-  ghgGridResults <- totalexcrete %>% dplyr::select(rcFid_1km, kgCO2e_excrete) %>%
-    merge(ghgGridResults, .
-          , by = "rcFid_1km")
-  head(ghgGridResults)
-  
-  #### 11e - fertiliser use ####
-  # load in fertiliser - an amount per km2
-  fertUse <- st_read(file.path(resultsPath, "arable", "fertiliser_emissions.gpkg"))
-  head(fertUse)
-  
-  ###### add to final dataframe ######
-  ghgGridResults <- fertUse %>% dplyr::select(fertliser_CO2e_kgkm2, rcFid_1km) %>%
-    st_drop_geometry() %>%
-    merge(ghgGridResults, .
-          , by = "rcFid_1km"
-          , all = T) %>%
-    replace(is.na(.), 0)
-  head(ghgGridResults)
-  
-  #### 11f - land use ####
-  # load in land use emissions - an amount per km2 for non-ag areas
-  landUse <- st_read(file.path(resultsPath, "land_use", "land_use_emissions.gpkg")) %>%
-    # get a kg co2e value
-    mutate(landCoverTotalEmis_kgco2 = landCoverTotalEmis_tco2 * 1000)
-  head(landUse)
-  
-  ###### add to final dataframe ######
-  ghgGridResults <- landUse %>% dplyr::select(landCoverTotalEmis_kgco2, rcFid_1km) %>%
-    st_drop_geometry() %>%
-    merge(ghgGridResults, .
-          , by = "rcFid_1km"
-          , all = T) %>%
-    replace(is.na(.), 0)
-  head(ghgGridResults)
-  
-  #### 11g - residue management ####
-  # load in residue management emissions - an amount per km2 
-  residues <- st_read(file.path(resultsPath, "arable", "residEmisComb_kgCO2e.gpkg")) %>%
-    # assume all burned
-    mutate(totalResid_kgKm2 = Burned..100..)
-  head(residues)
-  
-  ###### add to final dataframe ######
-  ghgGridResults <- residues %>% dplyr::select(totalResid_kgKm2, rcFid_1km) %>%
-    st_drop_geometry() %>%
-    merge(ghgGridResults, .
-          , by = "rcFid_1km"
-          , all = T) %>%
-    replace(is.na(.), 0)
-  head(ghgGridResults)
-  
-  #### 11h - on-farm energy ####
-  # load in on-farm energy emissions - an amount per km2 
-  onFarmEnergy <- st_read(file.path(resultsPath, "land_use", "fuel_emissions.gpkg")) %>%
-    rename(fuel_kgco2e = totalkgCO2e)
-  head(onFarmEnergy)
-  
-  ###### add to final dataframe ######
-  ghgGridResults <- onFarmEnergy %>% dplyr::select(fuel_kgco2e, rcFid_1km) %>%
-    st_drop_geometry() %>%
-    merge(ghgGridResults, .
-          , by = "rcFid_1km"
-          , all = T) %>%
-    replace(is.na(.), 0)
-  head(ghgGridResults)
-  str(ghgGridResults)
-  
-  #### 12i - sum all together ####
-  ghgGridResultsSum <- ghgGridResults %>% st_drop_geometry() %>%
-    mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_entferm:fuel_kgco2e)))) %>%
-    # convert to tonnes
-    mutate(total_Tco2e = total_kgco2e / 1000) 
-  head(ghgGridResultsSum)
-  str(ghgGridResultsSum)
-  max(ghgGridResultsSum$total_Tco2e, na.rm = T)
-  
-  attr(ghgGridResultsSum$total_kgco2e, "ATT") <- NULL
-  attr(ghgGridResultsSum$total_Tco2e, "ATT") <- NULL
-  str(ghgGridResultsSum)
-  
-  #### 12j - inverse ####
-  ghgGridResultsSum <- ghgGridResultsSum %>%
-    mutate(total_Tco2e_inv = total_Tco2e * -1)
-  head(ghgGridResultsSum)
-  str(ghgGridResultsSum)
-  
-  # make spatial... again
-  ghgGridResultsSpat <- ghgGridResultsSum %>%
-    merge(ghgGridGB, .)
-  head(ghgGridResultsSpat)
-  str(ghgGridResultsSpat)
-  
-  #### 12k - save final output ####
-  st_write(ghgGridResultsSpat, file.path(resultsPath, "ghg_final_emissions_CO2e.gpkg"), append = F)
-  fwrite(st_drop_geometry(ghgGridResultsSpat)
-         , file.path(resultsPath, "ghg_final_emissions_CO2e.csv")
-         , row.names = F)
-  
-  which(ghgGridResultsSpat$total_Tco2e == max(ghgGridResultsSpat$total_Tco2e, na.rm = T))
-  ghgGridResultsSpat[197730, ]
-  
-  # make spatial (raster data)
-  vpRast <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e_inv, geometry))
-  plot(vpRast)
-  empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
-  vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
-  crs(vpRast) <- "epsg:27700"
-  # save raster
-  writeRaster(vpRast, file.path(resultsPath, "ghgfin_emissions_CO2e_inv.tif"), overwrite = T)
-  
-  rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
-                           , dx = 1000, dy = 1000
-                           , crs = 27700)
-  plot(rasterDf)
-  write_stars(rasterDf,  file.path(resultsPath, "ghg_final_emissions_CO2e.tif"))
-  
-  #### 12l - plot final output ####
-  # set colour ramp
-  rasterDf2 <- rasterDf %>%
-    as.data.frame(xy = T)
-  head(rasterDf2)
-  
-  breaks <- c(-1000, 0, 1000, 2000)  # Define your custom breaks
-  colors <- c("#40B0A6", "white", "orange1", "#E66100")
-  
-  gg <- ggplot() +
-    geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
-    theme_void() +
-    coord_equal() +
-    scale_fill_gradientn(breaks = breaks, colours = colors
-                         , na.value="white") +
-    labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
-    theme(legend.text = element_text(size = 8))
-  
-  png("images/ghg_balance.png"
-      , res = 200
-      , width = 1000, height = 1200)
-  print(gg)
-  dev.off()
-  
-  png("images/ghg_balance2.png"
-      , res = 200
-      , width = 900, height = 1200)
-  print(gg)
-  dev.off()
-  
-  #### 12m - replace entFerm emissions with UK-specific equations
-  # load in enteric fermentation - a per-animal emission value (uk-specific equation)
-  entFermUK <- fread(file.path(resultsPath, "animals", "entericFerm_uk_CH4CO2e.csv"))
-  head(entFermUK)
-  
-  # run through the transposing multiplication function
-  totalEntFermUK <- regionsTranspose(griddf = gridAnimals.original
-                                     , rSel = entFermUK
-                                     , finalCol = "kgCO2e_uk_entferm"
-                                     , colofInterest = "co2e_kg_year")
-  head(totalEntFermUK)
-  class(totalEntFermUK)
-  
-  head(ghgGridResultsSum)
-  ghgGridResultsSum.uk <- ghgGridResultsSum %>%
-    dplyr::select(-c(kgCO2e_entferm, total_kgco2e: total_Tco2e_inv)) %>%
-    # add uk Enteric fermentation in
-    merge(totalEntFermUK %>%
-            dplyr::select(rcFid_1km, kgCO2e_uk_entferm))
-  head(ghgGridResultsSum.uk)
-  ## total calculation
-  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_manMgmt:kgCO2e_uk_entferm)))) %>%
-    # convert to tonnes
-    mutate(total_Tco2e = total_kgco2e / 1000) 
-  head(ghgGridResultsSum.uk)
-  str(ghgGridResultsSum.uk)
-  max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T)
-  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
-  head(ghgGridResultsSum.uk)
-  str(ghgGridResultsSum.uk)
-  
-  ### create the inverse
-  ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    mutate(total_Tco2e_inv = total_Tco2e * -1) %>%
-    relocate(rcFid_1km:total_Tco2e, total_Tco2e_inv)
-  head(ghgGridResultsSum.uk)
-  str(ghgGridResultsSum.uk)
-  
-  ### write
-  st_write(ghgGridResultsSum.uk, file.path(resultsPath, "ghg_emissions_CO2e_uk.gpkg"), append = F)
-  fwrite(st_drop_geometry(ghgGridResultsSpat)
-         , file.path(resultsPath, "ghg_emissions_CO2e_uk.csv")
-         , row.names = F)
-  
-  which(ghgGridResultsSum.uk$total_Tco2e == max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T))
-  ghgGridResultsSum.uk[197730, ]
-  
-  # make spatial (raster data)
-  vpRast <- st_rasterize(ghgGridResultsSum.uk %>% dplyr::select(total_Tco2e_inv, geometry))
-  plot(vpRast)
-  empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
-  vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
-  crs(vpRast) <- "epsg:27700"
-  # save raster
-  writeRaster(vpRast, file.path(resultsPath, "ghgfin_emisUK_CO2e_inv.tif"), overwrite = T)
-  
-  rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
-                           , dx = 1000, dy = 1000
-                           , crs = 27700)
-  plot(rasterDf)
-  write_stars(rasterDf,  file.path(resultsPath, "ghgfin_emisUK_CO2e.tif"))
-  
-  ### plot results
-  # set colour ramp
-  rasterDf2 <- rasterDf %>%
-    as.data.frame(xy = T)
-  head(rasterDf2)
-  
-  breaks <- c(-1000, 0, 1000, 2000)  # Define your custom breaks
-  colors <- c("#40B0A6", "white", "orange1", "#E66100")
-  
-  gg <- ggplot() +
-    geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
-    theme_void() +
-    coord_equal() +
-    scale_fill_gradientn(breaks = breaks, colours = colors
-                         , na.value="white") +
-    labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
-    theme(legend.text = element_text(size = 8))
-  
-  png("images/ghg_balance_uk.png"
-      , res = 200
-      , width = 1000, height = 1200)
-  print(gg)
-  dev.off()
-  
-  png("images/ghg_balance2_uk.png"
-      , res = 200
-      , width = 900, height = 1200)
-  print(gg)
-  dev.off()
+  ##### 11.0 - select original data or scenario #####
+  for(iscen in 1:(length(scenarios) + 1)){
+    # for(iscen in 1:2){
+    
+    # get the regions by themselves
+    reg <- st_read(file.path("data_in", "animals", "nonBovine_grid_2020_1km.gpkg"), quiet = T) %>% 
+      dplyr::select(rcFid_1km, region) %>% st_drop_geometry()
+    ## convert non-england regions to 'other' - to match original cow regions
+    reg$region <- ifelse(reg$region %in% 
+                           c("Highlands and Islands", "Mid and West Wales"
+                             , "West Scotland", "South Scotland", "North Wales"
+                             , "Mid Scotland and Fife", "South Wales West"
+                             , "Glasgow", "Central Scotland", "South Wales Central", "Lothian"
+                             , "North East Scotland", "South Wales East")
+                         , "other", reg$region)
+    ## add underscores to regions, to make them match output df
+    reg$region <- gsub(" ", "_", reg$region)
+    ## and make London the same as South East
+    reg$region <- ifelse(reg$region == "London", "South_East"
+                         , reg$region)
+    ## convert the humber, to match excrete N df
+    reg$region <- ifelse(reg$region == "Yorkshire_and_The_Humber"
+                         , "Yorkshire_and_the_Humber"
+                         , reg$region)
+    unique(reg$region)
+    
+    # if 'iscen' is 1, use 2015 data
+    if(iscen == 1){
+      cat("Starting 2015 combining emissions...\n")
+      # set input location - for land cover
+      currPath <- file.path("data_in", "animals")
+      # set output location
+      resultsPath <- file.path("results")
+      # load grids - animals and land cover - with regions 
+      gridAnimals.original <- st_read(file.path(currPath, "all_animals_1km.gpkg"), quiet = T) %>%
+        st_drop_geometry()
+      gridLand.original <- st_read(file.path("data_in", "land_cover", "land_cover_table.gpkg"), quiet = T) %>%
+        st_drop_geometry() %>%
+        merge(ghgGridGB, .)
+      head(gridLand.original)
+      
+      gridAnimals <- gridAnimals.original
+      gridLand <- gridLand.original
+      
+      rm(gridAnimals.original, gridLand.original)
+      
+    } else { # if > 1, use the scenarios
+      scenName <- gsub(".gpkg", "", basename(scenarios[iscen-1]))
+      cat("Starting", scenName,  "combining emissions...\n")
+      # create saving directory
+      dir.create(savePath <- file.path("scenario", "final_results"), showWarnings = F)
+      resultsPath <- file.path("scenario", "results")
+      # load grids - animals and land cover - with regions 
+      landArea.scens <- st_read(file.path("scenario", "scen_maps", "finer_detail"
+                                          , paste0(scenName, "_land.gpkg"))
+                                , quiet = T) %>%
+        st_drop_geometry()
+      animalArea.scens <- st_read(file.path("scenario", "scen_maps", "finer_detail"
+                                            , paste0(scenName, "_animal.gpkg"))
+                                  , quiet = T) %>%
+        st_drop_geometry()
+      
+      gridAnimals <- animalArea.scens
+      gridLand <- landArea.scens
+      
+      rm(animalArea.scens, landArea.scens)
+    }
+    
+    # add the appropriate regions
+    gridAnimals <- gridAnimals %>%
+      merge(., reg) %>% # merge, to get region
+      relocate(rcFid_1km, region)
+    # print(head(gridAnimals))
+    
+    gridLand <- gridLand %>%
+      merge(., reg) %>% # merge, to get region
+      relocate(rcFid_1km, region)
+    # print(head(gridLand))
+    
+    #### 11b - enteric fermentation ####
+    cat("   ...starting enteric fermentation...\n")
+    # load in enteric fermentation - a per-animal emission value
+    entFerm <- fread(file.path("results", "animals", "entericFermCH4CO2e.csv"))
+    head(entFerm)
+    
+    # run through the transposing multiplication function
+    totalEntFerm <- regionsTranspose(griddf = gridAnimals
+                                     , rSel = entFerm
+                                     , finalCol = "kgCO2e_entferm"
+                                     , colofInterest = "kgCO2.50pcScen")
+    head(totalEntFerm)
+    class(totalEntFerm)
+    
+    ###### add to final dataframe ######
+    cat("   ...adding enteric fermentation...\n")
+    ghgGridResults <- totalEntFerm %>% dplyr::select(rcFid_1km, kgCO2e_entferm) %>%
+      merge(ghgGridGB, .
+            , by = "rcFid_1km")
+    head(ghgGridResults)
+    plot(ghgGridResults[1])
+    
+    #### 11c - manure management ####
+    cat("   ...starting manure management...\n")
+    # load in manure management - a per-animal emission value - it is a value for 6 months (indoors)
+    manMgmt <- fread(file.path("results", "animals", "sixMonthMMCO2e.csv"))
+    head(manMgmt)
+    
+    # run through the transposing multiplication function
+    totalmanMgmt <- regionsTranspose(griddf = gridAnimals
+                                     , rSel = manMgmt
+                                     , finalCol = "kgCO2e_manMgmt"
+                                     , colofInterest = "MMkgCO2e6MnIn")
+    head(totalmanMgmt)
+    
+    ###### add to final dataframe ######
+    cat("   ...adding manure management...\n")
+    ghgGridResults <- totalmanMgmt %>% dplyr::select(rcFid_1km, kgCO2e_manMgmt) %>%
+      merge(ghgGridResults, .
+            , by = "rcFid_1km")
+    head(ghgGridResults)
+    
+    #### 11d - animal excretions ####
+    cat("   ...starting animal excretions...\n")
+    # load in animal excretions - a per-animal emission value
+    excrete <- fread(file.path("results", "animals", "annual_grazing_emissions.csv"))
+    head(excrete)
+    
+    # run through the transposing multiplication function
+    totalexcrete <- regionsTranspose(griddf = gridAnimals
+                                     , rSel = excrete
+                                     , finalCol = "kgCO2e_excrete"
+                                     , colofInterest = "grazEmisYr_kgCO2e")
+    head(totalexcrete)
+    
+    ###### add to final dataframe ######
+    cat("   ...adding animal excretions...\n")
+    ghgGridResults <- totalexcrete %>% dplyr::select(rcFid_1km, kgCO2e_excrete) %>%
+      merge(ghgGridResults, .
+            , by = "rcFid_1km")
+    head(ghgGridResults)
+    
+    #### 11e - fertiliser use ####
+    cat("   ...starting fertiliser use...\n")
+    # load in fertiliser - an amount per km2
+    # if 'iscen' is 1, use 2015 data
+    if(iscen == 1){
+      fertUse <- st_read(file.path(resultsPath, "arable", "fertiliser_emissions.gpkg"), quiet = T)
+    } else {
+      fertUse <- st_read(file.path(resultsPath
+                                   , paste0("fertiliser_emissions", scenName, ".gpkg")), quiet = T)
+    }
+    head(fertUse)
+    
+    ###### add to final dataframe ######
+    cat("   ...adding fertiliser use...\n")
+    ghgGridResults <- fertUse %>% dplyr::select(fertliser_CO2e_kgkm2, rcFid_1km) %>%
+      st_drop_geometry() %>%
+      merge(ghgGridResults, .
+            , by = "rcFid_1km"
+            , all = T) %>%
+      replace(is.na(.), 0)
+    head(ghgGridResults)
+    
+    #### 11f - land use ####
+    # stop("before land use")
+    cat("   ...starting land use...\n")
+    # load in land use emissions - an amount per km2 for non-ag areas
+    if(iscen == 1){
+      landUse <- st_read(file.path(resultsPath, "land_use", "land_use_emissions.gpkg")
+                         , quiet = T) %>%
+        # get a kg co2e value
+        mutate(landCoverTotalEmis_kgco2 = landCoverTotalEmis_tco2 * 1000) %>%
+        st_drop_geometry() %>% distinct()
+    } else {
+      landUse <- st_read(file.path(resultsPath
+                                   , paste0("land_use_emissions", scenName, ".gpkg"))
+                         , quiet = T) %>%
+        # get a kg co2e value
+        mutate(landCoverTotalEmis_kgco2 = landCoverTotalEmis_tco2 * 1000) %>%
+        st_drop_geometry() %>% distinct()
+    }
+    head(landUse)
+    
+    ###### add to final dataframe ######
+    cat("   ...adding land use...\n")
+    ghgGridResults <- landUse %>% dplyr::select(landCoverTotalEmis_kgco2, rcFid_1km) %>%
+      st_drop_geometry() %>%
+      merge(ghgGridResults, .
+            , by = "rcFid_1km"
+            , all = T) %>%
+      replace(is.na(.), 0)
+    head(ghgGridResults)
+    
+    #### 11g - residue management ####
+    cat("   ...starting residue management...\n")
+    # load in residue management emissions - an amount per km2 
+    if(iscen == 1){
+      residues <- st_read(file.path(resultsPath, "arable", "residEmisComb_kgCO2e.gpkg")
+                          , quiet = T) %>%
+        # assume all burned
+        mutate(totalResid_kgKm2 = Burned..100..)
+    } else {
+      residues <- st_read(file.path(resultsPath
+                                    , paste0("residEmisComb_kgCO2e", scenName, ".gpkg"))
+                          , quiet = T) %>%
+        # assume all burned
+        mutate(totalResid_kgKm2 = Burned..100..)
+    }
+    
+    head(residues)
+    
+    ###### add to final dataframe ######
+    cat("   ...adding residue management...\n")
+    ghgGridResults <- residues %>% dplyr::select(totalResid_kgKm2, rcFid_1km) %>%
+      st_drop_geometry() %>%
+      merge(ghgGridResults, .
+            , by = "rcFid_1km"
+            , all = T) %>%
+      replace(is.na(.), 0)
+    head(ghgGridResults)
+    
+    #### 11h - on-farm energy ####
+    cat("   ...starting on-farm energy...\n")
+    # load in on-farm energy emissions - an amount per km2 
+    if(iscen == 1){
+      onFarmEnergy <- st_read(file.path(resultsPath, "land_use", "fuel_emissions.gpkg")
+                              , quiet = T) %>%
+        rename(fuel_kgco2e = totalkgCO2e)
+    } else {
+      onFarmEnergy <- st_read(file.path(resultsPath
+                                        , paste0("fuel_emissions", scenName, ".gpkg"))
+                              , quiet = T) %>%
+        rename(fuel_kgco2e = totalkgCO2e)
+    }
+    
+    head(onFarmEnergy)
+    
+    ###### add to final dataframe ######
+    cat("   ...adding on-farm energy...\n")
+    ghgGridResults <- onFarmEnergy %>% dplyr::select(fuel_kgco2e, rcFid_1km) %>%
+      st_drop_geometry() %>%
+      merge(ghgGridResults, .
+            , by = "rcFid_1km"
+            , all = T) %>%
+      replace(is.na(.), 0)
+    head(ghgGridResults)
+    # str(ghgGridResults)
+    
+    #### 12i - sum all together ####
+    cat("   ...summing all emissions together...\n")
+    ghgGridResultsSum <- ghgGridResults %>% st_drop_geometry() %>%
+      mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_entferm:fuel_kgco2e)))) %>%
+      # convert to tonnes
+      mutate(total_Tco2e = total_kgco2e / 1000) %>%
+      distinct()
+    head(ghgGridResultsSum)
+    # str(ghgGridResultsSum)
+    max(ghgGridResultsSum$total_Tco2e, na.rm = T)
+    
+    attr(ghgGridResultsSum$total_kgco2e, "ATT") <- NULL
+    attr(ghgGridResultsSum$total_Tco2e, "ATT") <- NULL
+    # str(ghgGridResultsSum)
+    
+    #### 12j - inverse ####
+    cat("   ...creating inverse emissions...\n")
+    ghgGridResultsSum <- ghgGridResultsSum %>%
+      mutate(total_Tco2e_inv = total_Tco2e * -1)
+    head(ghgGridResultsSum)
+    # str(ghgGridResultsSum)
+    
+    # make spatial... again
+    ghgGridResultsSpat <- ghgGridResultsSum %>%
+      distinct() %>%
+      merge(ghgGridGB, .) 
+    head(ghgGridResultsSpat)
+    # str(ghgGridResultsSpat)
+    
+    #### 12k - save final output ####
+    cat("   ...saving final emissions...\n")
+    which(ghgGridResultsSpat$total_Tco2e == max(ghgGridResultsSpat$total_Tco2e, na.rm = T))
+    ghgGridResultsSpat[197730, ]
+    
+    # make spatial (raster data)
+    vpRast <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e_inv, geometry))
+    plot(vpRast)
+    empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
+    vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
+    crs(vpRast) <- "epsg:27700"
+    
+    rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
+                             , dx = 1000, dy = 1000
+                             , crs = 27700)
+    
+    plot(rasterDf)
+    
+    # save outputs
+    ## ------------ Notes --------------  ##
+    ## Order of saves are:
+    ## Geopackage of all layers of emissions
+    ## all layers of emissions in csv form
+    ## raster of final emissions in its inverse form (i.e., making emissions negative)
+    ## raster of final emissions (i.e., making emissions positive)
+    ## ------------ ----- --------------  ##
+    
+    if(iscen == 1){ # original data
+      st_write(ghgGridResultsSpat, file.path(resultsPath, "ghg_final_emissions_CO2e.gpkg")
+               , append = F, quiet = T)
+      fwrite(st_drop_geometry(ghgGridResultsSpat)
+             , file.path(resultsPath, "ghg_final_emissions_CO2e.csv")
+             , row.names = F)
+      cat("      ...saved", file.path(resultsPath, "ghg_final_emissions_CO2e.gpkg"), "\n")
+      writeRaster(vpRast, file.path(resultsPath, "ghgfin_emissions_CO2e_inv.tif"), overwrite = T)
+      cat("      ...saved", file.path(resultsPath, "ghgfin_emissions_CO2e_inv.tif"), "\n")   
+      write_stars(rasterDf,  file.path(resultsPath, "ghg_final_emissions_CO2e.tif"))
+      
+    } else { # scenario data
+      
+      # if(scenName == "Ag_15"){stop("Ag_15")}
+      
+      st_write(ghgGridResultsSpat, file.path(savePath
+                                             , paste0("ghg_final_emissions_CO2e", scenName, ".gpkg"))
+               , append = F, quiet = T)
+      fwrite(st_drop_geometry(ghgGridResultsSpat)
+             , file.path(savePath
+                         , paste0("ghg_final_emissions_CO2e", scenName, ".csv"))
+             , row.names = F)
+      cat("      ...saved", file.path(savePath
+                                      , paste0("ghg_final_emissions_CO2e", scenName, ".gpkg")), "\n")
+      writeRaster(vpRast, file.path(savePath
+                                    , paste0("ghgfin_emissions_CO2e_inv", scenName, ".tif"))
+                  , overwrite = T)
+      cat("      ...saved", file.path(savePath
+                                      , paste0("ghgfin_emissions_CO2e_inv", scenName, ".tif")), "\n")   
+      
+      write_stars(rasterDf,  file.path(savePath
+                                       , paste0("ghg_final_emissions_CO2e", scenName, ".tif"))
+      )
+      
+    }
+    
+    #### 12l - plot final output ####
+    # set colour ramp
+    rasterDf2 <- rasterDf %>%
+      as.data.frame(xy = T)
+    head(rasterDf2)
+    
+    breaks <- c(-1000, 0, 1000, 2000)  # Define your custom breaks
+    colors <- c("#40B0A6", "white", "orange1", "#E66100")
+    
+    gg <- ggplot() +
+      geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
+      theme_void() +
+      coord_equal() +
+      scale_fill_gradientn(breaks = breaks, colours = colors
+                           , na.value="white") +
+      labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
+      theme(legend.text = element_text(size = 8))
+    
+    cat("   ...saving final emissions [as images]...\n")
+    
+    # stop("before images")
+    
+    if(iscen == 1){ # original data
+      png("images/ghg_balance_wider.png"
+          , res = 200
+          , width = 1000, height = 1200)
+      print(gg)
+      dev.off()
+      
+      png("images/ghg_balance_narrower.png"
+          , res = 200
+          , width = 900, height = 1200)
+      print(gg)
+      dev.off()
+    } else { # scenario data
+      png(paste0("images/ghg_balance_wider", scenName, ".png")
+          , res = 200
+          , width = 1000, height = 1200)
+      print(gg)
+      dev.off()
+      
+      png(paste0("images/ghg_balance_narrower", scenName, ".png")
+          , res = 200
+          , width = 900, height = 1200)
+      print(gg)
+      dev.off()
+    }
+    
+    #### 12m - replace entFerm emissions with UK-specific equations
+    cat("   ...creating UK emissions...\n")
+    # load in enteric fermentation - a per-animal emission value (uk-specific equation)
+    entFermUK <- fread(file.path("results", "animals", "entericFerm_uk_CH4CO2e.csv"))
+    head(entFermUK)
+    
+    # run through the transposing multiplication function
+    totalEntFermUK <- regionsTranspose(griddf = gridAnimals
+                                       , rSel = entFermUK
+                                       , finalCol = "kgCO2e_uk_entferm"
+                                       , colofInterest = "co2e_kg_year")
+    head(totalEntFermUK)
+    class(totalEntFermUK)
+    
+    head(ghgGridResultsSum)
+    ghgGridResultsSum.uk <- ghgGridResultsSum %>%
+      dplyr::select(-c(kgCO2e_entferm, total_kgco2e: total_Tco2e_inv)) %>%
+      # add uk Enteric fermentation in
+      merge(totalEntFermUK %>%
+              dplyr::select(rcFid_1km, kgCO2e_uk_entferm))
+    head(ghgGridResultsSum.uk)
+    
+    ## total calculation
+    ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+      mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_manMgmt:kgCO2e_uk_entferm)))) %>%
+      # convert to tonnes
+      mutate(total_Tco2e = total_kgco2e / 1000) 
+    head(ghgGridResultsSum.uk)
+    # str(ghgGridResultsSum.uk)
+    max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T)
+    ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+      merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
+    head(ghgGridResultsSum.uk)
+    # str(ghgGridResultsSum.uk)
+    
+    ### create the inverse
+    ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+      mutate(total_Tco2e_inv = total_Tco2e * -1) %>%
+      relocate(rcFid_1km:total_Tco2e, total_Tco2e_inv)
+    head(ghgGridResultsSum.uk)
+    # str(ghgGridResultsSum.uk)
+    
+    ### write
+    if(iscen == 1){
+      st_write(ghgGridResultsSum.uk, file.path("results", "ghg_emissions_CO2e_uk.gpkg"), append = F)
+      fwrite(st_drop_geometry(ghgGridResultsSum.uk)
+             , file.path("results", "ghg_emissions_CO2e_uk.csv")
+             , row.names = F)
+    } else { # scenario data
+      
+      st_write(ghgGridResultsSum.uk
+               , file.path(savePath, paste0("ghg_emissions_CO2e_uk", scenName, ".gpkg"))
+               , append = F)
+      fwrite(st_drop_geometry(ghgGridResultsSum.uk)
+             , file.path(savePath, paste0("ghg_emissions_CO2e_uk", scenName, ".csv"))
+             , row.names = F)
+    }
+  }
+  # stop("elephant")
 }
 
 if(runAllScenarios){
@@ -8652,108 +8771,112 @@ if(runAllScenarios){
     print(gg)
     dev.off()
     
-    # #### 13ms - replace entFerm emissions with UK-specific equations
-    # # load in enteric fermentation - a per-animal emission value (uk-specific equation)
-    # entFermUK <- fread(file.path(resultsPath, "animals", "entericFerm_uk_CH4CO2e.csv"))
-    # head(entFermUK)
-    # 
-    # # run through the transposing multiplication function
-    # totalEntFermUK <- regionsTranspose(griddf = gridAnimals.scenario
-    #                                    , rSel = entFermUK
-    #                                    , finalCol = "kgCO2e_uk_entferm"
-    #                                    , colofInterest = "co2e_kg_year")
-    # head(totalEntFermUK)
-    # class(totalEntFermUK)
-    # 
-    # head(ghgGridResultsSum)
-    # ghgGridResultsSum.uk <- ghgGridResultsSum %>%
-    #   dplyr::select(-c(kgCO2e_entferm, total_kgco2e: total_Tco2e_inv)) %>%
-    #   # add uk Enteric fermentation in
-    #   merge(totalEntFermUK %>%
-    #           dplyr::select(rcFid_1km, kgCO2e_uk_entferm))
-    # head(ghgGridResultsSum.uk)
-    # ## total calculation
-    # ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    #   mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_manMgmt:kgCO2e_uk_entferm)))) %>%
-    #   # convert to tonnes
-    #   mutate(total_Tco2e = total_kgco2e / 1000) 
-    # head(ghgGridResultsSum.uk)
-    # # str(ghgGridResultsSum.uk)
-    # # max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T)
-    # ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    #   merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
-    # head(ghgGridResultsSum.uk)
-    # # str(ghgGridResultsSum.uk)
-    # 
-    # ### create the inverse
-    # ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
-    #   mutate(total_Tco2e_inv = total_Tco2e * -1) %>%
-    #   relocate(rcFid_1km:total_Tco2e, total_Tco2e_inv)
-    # head(ghgGridResultsSum.uk)
+    #### 13ms - convert to MtCO2e ####
+    ghgResultsMtCO2e <- ghgGridResultsSpat %>%
+      mutate(total_MtCO2e = total_Tco2e)
+    
+    #### 13ms - replace entFerm emissions with UK-specific equations
+    # load in enteric fermentation - a per-animal emission value (uk-specific equation)
+    entFermUK <- fread(file.path(resultsPath, "animals", "entericFerm_uk_CH4CO2e.csv"))
+    head(entFermUK)
+    
+    # run through the transposing multiplication function
+    totalEntFermUK <- regionsTranspose(griddf = gridAnimals.scenario
+                                       , rSel = entFermUK
+                                       , finalCol = "kgCO2e_uk_entferm"
+                                       , colofInterest = "co2e_kg_year")
+    head(totalEntFermUK)
+    class(totalEntFermUK)
+    
+    head(ghgGridResultsSum)
+    ghgGridResultsSum.uk <- ghgGridResultsSum %>%
+      dplyr::select(-c(kgCO2e_entferm, total_kgco2e: total_Tco2e_inv)) %>%
+      # add uk Enteric fermentation in
+      merge(totalEntFermUK %>%
+              dplyr::select(rcFid_1km, kgCO2e_uk_entferm))
+    head(ghgGridResultsSum.uk)
+    ## total calculation
+    ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+      mutate(total_kgco2e = rowSums(dplyr::select(.[,,], c(kgCO2e_manMgmt:kgCO2e_uk_entferm)))) %>%
+      # convert to tonnes
+      mutate(total_Tco2e = total_kgco2e / 1000)
+    head(ghgGridResultsSum.uk)
     # str(ghgGridResultsSum.uk)
-    # 
-    # ### write
-    # st_write(ghgGridResultsSum.uk
-    #          , file.path("scenario", "final_results"
-    #                      , paste0(sn, "_final_emissions_CO2e_uk.gpkg"))
-    #          , append = F)
-    # fwrite(st_drop_geometry(ghgGridResultsSpat)
-    #        , file.path("scenario", "final_results"
-    #                    , paste0(sn, "_final_emissions_CO2e_uk.csv"))
-    #        , row.names = F)
-    # 
-    # which(ghgGridResultsSum.uk$total_Tco2e == max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T))
-    # ghgGridResultsSum.uk[197730, ]
-    # 
-    # # make spatial (raster data)
-    # vpRast <- st_rasterize(ghgGridResultsSum.uk %>% dplyr::select(total_Tco2e_inv, geometry))
-    # plot(vpRast)
-    # empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
-    # vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
-    # crs(vpRast) <- "epsg:27700"
-    # # save raster
-    # writeRaster(vpRast
-    #             , file.path("scenario", "final_results"
-    #                         , paste0(sn, "_fin_emisUK_CO2e_inv.tif"))
-    #             , overwrite = T)
-    # 
-    # rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
-    #                          , dx = 1000, dy = 1000
-    #                          , crs = 27700)
-    # plot(rasterDf)
-    # write_stars(rasterDf
-    #             , file.path("scenario", "final_results"
-    #                         , paste0(sn, "_ghgfin_emisUK_CO2e.tif"))
-    # )
-    # 
-    # ### plot results
-    # # set colour ramp
-    # rasterDf2 <- rasterDf %>%
-    #   as.data.frame(xy = T)
-    # head(rasterDf2)
-    # 
-    # max(rasterDf2$total_Tco2e, na.rm = T)
-    # 
-    # breaks <- seq(-1000, 1000, 250)
-    # colors <- c("#40B0A6", "white", "orange1", "#E66100")
-    # 
-    # gg <- ggplot() + 
-    #   geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
-    #   scale_fill_gradientn(
-    #     colors = c("#40B0A6","white","#E66100"),
-    #     values = scales::rescale(c(-500, 0 , 500)),
-    #     limits = c(min(rasterDf2$total_Tco2e, na.rm = T)
-    #                ,  max(rasterDf2$total_Tco2e, na.rm = T))
-    #     , na.value="white"
-    #   ) +
-    #   labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
-    #   theme(legend.text = element_text(size = 8))
-    # 
-    # png(paste0("images/ghg_balance_uk_", sn, ".png")
-    #     , res = 200
-    #     , width = 1000, height = 1200)
-    # print(gg)
-    # dev.off()
+    # max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T)
+    ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+      merge(ghgGridGB %>% dplyr::select(rcFid_1km), .)
+    head(ghgGridResultsSum.uk)
+    # str(ghgGridResultsSum.uk)
+    
+    ### create the inverse
+    ghgGridResultsSum.uk <- ghgGridResultsSum.uk %>%
+      mutate(total_Tco2e_inv = total_Tco2e * -1) %>%
+      relocate(rcFid_1km:total_Tco2e, total_Tco2e_inv)
+    head(ghgGridResultsSum.uk)
+    str(ghgGridResultsSum.uk)
+    
+    ### write
+    st_write(ghgGridResultsSum.uk
+             , file.path("scenario", "final_results"
+                         , paste0(sn, "_final_emissions_CO2e_uk.gpkg"))
+             , append = F)
+    fwrite(st_drop_geometry(ghgGridResultsSpat)
+           , file.path("scenario", "final_results"
+                       , paste0(sn, "_final_emissions_CO2e_uk.csv"))
+           , row.names = F)
+    
+    which(ghgGridResultsSum.uk$total_Tco2e == max(ghgGridResultsSum.uk$total_Tco2e, na.rm = T))
+    ghgGridResultsSum.uk[197730, ]
+    
+    # make spatial (raster data)
+    vpRast <- st_rasterize(ghgGridResultsSum.uk %>% dplyr::select(total_Tco2e_inv, geometry))
+    plot(vpRast)
+    empty_raster <- raster(extent(ghgGridResultsSpat), res = c(1000, 1000))
+    vpRast <- fasterize::fasterize(ghgGridResultsSpat, empty_raster, field = "total_Tco2e_inv")
+    crs(vpRast) <- "epsg:27700"
+    # save raster
+    writeRaster(vpRast
+                , file.path("scenario", "final_results"
+                            , paste0(sn, "_fin_emisUK_CO2e_inv.tif"))
+                , overwrite = T)
+    
+    rasterDf <- st_rasterize(ghgGridResultsSpat %>% dplyr::select(total_Tco2e, geometry)
+                             , dx = 1000, dy = 1000
+                             , crs = 27700)
+    plot(rasterDf)
+    write_stars(rasterDf
+                , file.path("scenario", "final_results"
+                            , paste0(sn, "_ghgfin_emisUK_CO2e.tif"))
+    )
+    
+    ### plot results
+    # set colour ramp
+    rasterDf2 <- rasterDf %>%
+      as.data.frame(xy = T)
+    head(rasterDf2)
+    
+    max(rasterDf2$total_Tco2e, na.rm = T)
+    
+    breaks <- seq(-1000, 1000, 250)
+    colors <- c("#40B0A6", "white", "orange1", "#E66100")
+    
+    gg <- ggplot() +
+      geom_stars(data = rasterDf, aes(x = x, y = y, fill = total_Tco2e)) +
+      scale_fill_gradientn(
+        colors = c("#40B0A6","white","#E66100"),
+        values = scales::rescale(c(-500, 0 , 500)),
+        limits = c(min(rasterDf2$total_Tco2e, na.rm = T)
+                   ,  max(rasterDf2$total_Tco2e, na.rm = T))
+        , na.value="white"
+      ) +
+      labs(fill = expression(paste("GHG emissions (t ", CO[2]*"e)"))) +
+      theme(legend.text = element_text(size = 8))
+    
+    png(paste0("images/ghg_balance_uk_", sn, ".png")
+        , res = 200
+        , width = 1000, height = 1200)
+    print(gg)
+    dev.off()
     
     cat("##############################################\n\n")
     # stop("summed")
