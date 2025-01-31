@@ -17,6 +17,8 @@
 ## 1 - total GHG emissions for all scenarios combined 
 ## 2 - proportion of emissions (based on origin) assigned to each scenario
 ## 3 - proportions of GB hectads with different levels of percentage change
+## Specific tables:
+## 1 - percent land in different counties for 2015
 ##
 ## Author: Dr. Paul M. Evans
 ##
@@ -32,6 +34,7 @@ options(scipen = 6, digits = 4) # for non-scientific notation
 
 # remove objects
 rm(list = ls())
+gc()
 
 #### 0 - paths/ names ####
 spatialGrid <- "agland_grid_ESW.gpkg"
@@ -44,22 +47,24 @@ source("./r_scripts/proj_packages.R")
 #### Table 1 - total land cover ####
 # load 2015 land cover map
 currPath <- file.path("./data_in", "land_cover")
+
 # load 25 m LCM raster
 lcmCrops25 <- rast(file.path(currPath, "LCM2015PlusCrops.tif"))
-lcTable <- table(lcmCrops25 %>% as.vector()) %>% as.data.frame()
+lcTable <- as.data.frame(lcmCrops25) %>%
+  count(V1, name = "Freq")
 lcTableArea <- lcTable %>%
   mutate(m2 = 625 * Freq
          , km2 = m2 / 1000000)
 sum(lcTableArea$km2)
 # calculate percentage cover
 lcTableArea$pc_cover <- (lcTableArea$km2 / sum(lcTableArea$km2, na.rm = TRUE) * 100)
-# for ag
-lcTableArea %>%
-  filter(startsWith(as.character(Var1), "3")) %>%
-  summarise(total_value = sum(pc_cover))
-lcTableArea %>%
-  filter(startsWith(as.character(Var1), "3")) %>%
-  summarise(total_value = sum(km2))
+# # for ag
+# lcTableArea %>%
+#   filter(startsWith(as.character(Var1), "3")) %>%
+#   summarise(total_value = sum(pc_cover))
+# lcTableArea %>%
+#   filter(startsWith(as.character(Var1), "3")) %>%
+#   summarise(total_value = sum(km2))
 
 #### Fig 1 - total GHG emissions for all scenarios combined  ####
 ##### 1a - load in all final csvs #####
@@ -92,18 +97,43 @@ allData <- bind_rows(dataScenarios) %>%
 # tidy
 rm(data2015, dataScenarios)
 
+# save the all data table
+fwrite(allData, file.path("results", "allData.csv"), row.names = F)
+head(allData)
+
 ##### 1b - summary data #####
 ## calculate the final values in MtCO2e
 allDataSum <- allData %>%
   rowwise() %>%
   # sum without the minuses
-  mutate(pure_emissions_Tco2e = sum(kgCO2e_entferm, kgCO2e_entferm, kgCO2e_manMgmt
+  mutate(pure_emissions_Tco2e = sum(kgCO2e_entferm, kgCO2e_manMgmt
                                     , kgCO2e_excrete, fertliser_CO2e_kgkm2, totalResid_kgKm2
                                     , fuel_kgco2e)) %>%
   group_by(data) %>%
   summarise(MtCO2e_balance = (sum(total_Tco2e)/1000000)
             , MtCO2e_emissions = ((sum(pure_emissions_Tco2e)/1000)/1000000)
             , n = n())
+head(allDataSum)
+# save the table
+fwrite(allDataSum, file.path("scenario", "results", "allDataSum.csv"), row.names = F)
+
+## calculate final differences
+### get baseline figures
+stopifnot(allDataSum$data[5] == "baseline2007")
+blFigs <- c(allDataSum$MtCO2e_balance[5], allDataSum$MtCO2e_emissions[5])
+
+allDataDiff <- allDataSum %>%
+  filter(data != "d2015") %>%
+  ## calculate total balances difference
+  mutate(bal_diff = MtCO2e_balance - blFigs[1]
+         , emiss_diff = MtCO2e_emissions - blFigs[2]
+         ### calculate percentage decrease
+         , bal_pc = ((MtCO2e_balance - blFigs[1]) / blFigs[1])*100
+         , emiss_pc = ((MtCO2e_emissions - blFigs[2]) / blFigs[2])*100
+  )
+head(allDataDiff)
+# save the table
+fwrite(allDataDiff, file.path("scenario", "results", "allDataDiff.csv"), row.names = F)
 
 ## calculate all in MtCO2e and sum in long form
 allDataLong <- allData %>%
@@ -121,6 +151,7 @@ allDataLong <- allData %>%
   pivot_longer(cols = !c(data, total_Mtco2e, total_Tco2e, total_Tco2e_inv)) %>%
   group_by(data, name) %>%
   summarise(summed_MtCO2e = sum(value))
+head(allDataLong)
 ## save, for exploration
 fwrite(allDataLong, "results/allDataLong.csv", row.names = F)
 
@@ -139,18 +170,16 @@ allDataVarSum <- allData %>%
   dplyr::select(-c(matches("Tco", ignore.case = F))) %>%
   group_by(data) %>%
   # sum all columns
-  summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE)))
+  summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+  mutate(total_gross = MtCO2e_entferm + MtCO2e_manMgmt + MtCO2e_excrete + fertliser_CO2e_Mtkm2 + totalResid_MtKm2 + fuel_Mtco2e)
+# save the table
+fwrite(allDataVarSum, file.path("scenario", "results", "allDataVarSum.csv"), row.names = F)
 
 # create a long er version, for the purposes of plotting
 allDataVarLong <- allDataVarSum %>%
   dplyr::select(-total_Mtco2e) %>%
   pivot_longer(!data) %>%
   mutate(dataFac = as.factor(data))
-## make wide, to get amount per category
-allDataVarWide <- allDataVarLong %>%
-  pivot_wider(names_from = "name", values_from = "value")
-
-
 ## add extra 'blank' bar to the long version
 add2 <- allDataVarLong %>%
   filter(data == "d2015") %>%
@@ -159,12 +188,51 @@ add2 <- allDataVarLong %>%
 
 # Combine data and assign factor levels
 allDataVarLongEx <- allDataVarLong %>%
+  # remove gross amount
+  filter(name != "total_gross") %>%
   bind_rows(add2) %>%
   mutate(dataFac = factor(
     dataFac,
     # convert data factors, to separate 2015 and 2007 data
     levels = c("d2015", "blank", "Gr_30", "Gr_15", "baseline2007", "Ag_15", "Ag_30")
-  ))
+  )) 
+
+head(allDataVarLongEx)
+# save the table
+fwrite(allDataVarLongEx, file.path("scenario", "results", "allDataVarLongEx.csv"), row.names = F)
+
+# make wide
+allDataVarWide <- allDataVarLong %>%
+  dplyr::select(-dataFac) %>%
+  pivot_wider(names_from = name, values_from = value) 
+head(allDataVarWide)
+
+## calculate final differences
+### get baseline figures
+stopifnot(allDataVarWide$data[5] == "baseline2007")
+blFigs <- c(allDataVarWide[5, 2:ncol(allDataVarWide)]) %>% as.numeric()
+
+allDataWideComp <- allDataVarWide %>%
+  filter(data != "d2015") %>%
+  dplyr::select(-total_gross) %>%
+  ## calculate total balances difference
+  mutate(
+    across(
+      2:ncol(.),
+      list(
+        diff = ~ . - blFigs[(which(names(allDataVarWide) == cur_column())) - 1],
+        pcDiff = ~ (. - blFigs[(which(names(allDataVarWide) == cur_column())) - 1]) / 
+          blFigs[(which(names(allDataVarWide) == cur_column())) - 1] * 100
+      ),
+      .names = "{fn} {col}"
+    )
+  )
+head(allDataWideComp)
+# save the table
+fwrite(allDataWideComp, file.path("scenario", "results", "allDataWideComp.csv"), row.names = F)
+
+# save the table
+fwrite(allDataVarWide, file.path("scenario", "results", "allDataVarWide.csv"), row.names = F)
 
 barOut <- ggplot(allDataVarLongEx, aes(x = dataFac, y = value, fill = name)) +
   # geom_col(colour = "black", position = "fill") +  scale_y_continuous(labels = scales::percent) +
@@ -203,12 +271,11 @@ png(file.path("scenario", "final_results"
                        , Sys.Date(), ".png"))
     , width = 1500, height = 900, units = "px"
     , res = 200
-    )
+)
 plot(barOut)
 dev.off()
 
-
-ggplot(allDataVarLongEx, aes(x = dataFac, y = value, fill = name)) +
+bo2 <- ggplot(allDataVarLongEx, aes(x = dataFac, y = value, fill = name)) +
   geom_col(colour = "black", position = "fill") +  scale_y_continuous(labels = scales::percent) +
   scale_fill_brewer(palette = "Pastel1")  +
   theme_minimal() +
@@ -226,7 +293,97 @@ ggplot(allDataVarLongEx, aes(x = dataFac, y = value, fill = name)) +
                               , "blank" = "")) +
   theme(axis.title.x = element_blank())
 
+png(file.path("scenario", "final_results"
+              , paste0("stack_scen_compare_pc"
+                       , Sys.Date(), ".png"))
+    , width = 1500, height = 900, units = "px"
+    , res = 200
+)
+plot(bo2)
+dev.off()
+
+##### Table 1 - land covers in counties #####
+## ------------ Notes --------------  ##
+## load in regions that were assigned earlier in the project, and then assign to all 
+## scenarios.
+## ------------ ----- --------------  ##
+# regions assigned
+regions <- fread(file.path("data_in", "regions_assigned.csv"))
+
+# list scenarios and 2015 baseline
+allLandMaps <- c(allLandMaps1 <- list.files("scenario/scen_maps/finer_detail"
+                                            , pattern = "_land.gpkg"
+                                            , full.names = T), 
+                 allLandMaps2 <- list.files("data_in/land_cover"
+                                            , pattern = "land_cover_table.gpkg"
+                                            , full.names = T)
+)
+## get counties
+countiesRegions <- st_read(file.path("data_in", "counties_regions_GB.gpkg")
+                           , quiet = T)
+## for each land cover, get value per regions
+regionsPerc <- lapply(seq_along(allLandMaps), function(i){
+  
+  message("starting ", allLandMaps[[i]])
+  
+  ## load land cover
+  lcIn <- allLandMaps[[i]] %>% st_read(quiet = T)
+  head(lcIn)
+  
+  # merge with region references, if 'rcFid_1km' is a column
+  if(grepl("rcFid_1km", paste(names(lcIn), collapse = "|"))){
+    lcInRegions <- lcIn %>%
+      merge(., regions)
+    
+    ## combine all arable into one column
+    lcInArab <- lcInRegions %>%
+      mutate(arable_ha = rowSums(across(c(winterwheat_ha, springwheat_ha, fieldbeans_ha, potato_ha,  
+                                          springbarley_ha, winterbarley_ha, oats_ha, rapeseed_ha, maize_ha,  
+                                          sugarbeet_ha)), na.rm = TRUE),  
+             .keep = "unused")
+    stopifnot(ncol(lcInArab) == 24)
+    
+    ## summarise by region then Calculate row totals and percentage contributions
+    lcOut <- lcInArab %>% st_drop_geometry() %>%
+      group_by(region) %>%
+      summarise(across(where(is.numeric), \(x) sum(x, na.rm = TRUE))) %>%
+      mutate(RowTotal = rowSums(across(where(is.numeric)), na.rm = T)) %>%
+      mutate(across(where(is.numeric), ~ . / RowTotal * 100, .names = "{.col}_pct")) %>%
+      dplyr::select(-c(RowTotal, RowTotal_pct)) %>%
+      # add scenario
+      mutate(scen = gsub(".gpkg", "", basename(allLandMaps[[i]])))
+    names(lcOut)
+    
+    return(lcOut)
+    
+  } else {
+    stop("No regions present")
+  }
+} # end of 'i'
+) %>%
+  bind_rows()
+
+# save
+fwrite(regionsPerc, file.path("results"
+                        , "lcRegionsTab.csv")
+       , row.names = F)
+
+#### x - write readme ####
+readmePath <- file.path("results", "readme_lcRegionsTab.md")
+# Create and open the file connection
+fileConn <- file(readmePath)
+writeLines(c(
+  "Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13"
+  , "Date created: 2024-12-12"
+  , paste0("Last update: ",  format(Sys.Date()))
+  , "Produced by 'ghg_outputs_analysis.R'
+
+Description of 'lcRegionsTab.csv': Table depicting the cover of different land covers for the different regions of the UK. It contains absolute values in hectares, and per cent cover of that region.")
+  , fileConn)
+close(fileConn)
+
 ##### 1c - compare animal and land covers #####
+###### single items ######
 # original data
 animals2015 <- st_read("data_in/animals/all_animals_1km.gpkg") %>% st_drop_geometry() %>%
   # add new column
@@ -324,7 +481,7 @@ dev.off()
 
 allDataLand2 <- allDataLand %>%
   relocate(rcFid_1km, data)
-# for each category, see the difference in distirbution
+# for each category, see the difference in distribution
 w1 <- which(names(allDataLand2) == "broadleaf_ha")
 w2 <- which(names(allDataLand2) == "sugarbeet_ha")
 
@@ -349,36 +506,21 @@ for(ww in w1:w2){
 }
 dev.off()
 
-
-ggplot(data = allDataLong %>% filter(name == "total_Tco2e")
-       , aes(x = data, y = summed_Tco2e)) +
-  geom_bar(stat="identity") +
-  theme_bw()
-
-ad2 <- allDataLong
-ad2$data <- as.factor(ad2$data)
-ad2$data <- factor(ad2$data, levels = c("Ag_30", "Ag_15", "baseline2007", "Gr_15", "Gr_30", "d2015"))
-ggplot(data = ad2 %>% filter(name == "total_Tco2e" & data != "d2015")
-       , aes(x = data, y = summed_Tco2e)) +
-  geom_bar(stat="identity") +
-  theme_bw()
-
-#### Fig 2 - proportion of emissions (based on origin) assigned to each scenario ####
-# keep only required rows
-allDataLong2 <- allDataLong %>%
-  filter(name %in% c("fertliser_CO2e_kgkm2", "fuel_kgco2e", "kgCO2e_entferm", "kgCO2e_excrete"
-                     , "kgCO2e_manMgmt", "landCoverTotalEmis_kgco2"))
-allDataLong2$data <- as.factor(allDataLong2$data)
-allDataLong2$data <- factor(allDataLong2$data, levels = c("Ag_30", "Ag_15", "baseline2007", "Gr_15", "Gr_30", "d2015"))
-
-ggplot(allDataLong2, aes(x = data, y = summed_Tco2e, fill = name)) +
-  geom_col(colour = "black", position = "fill") +
-  scale_y_continuous(labels = scales::percent) +
-  scale_fill_brewer(palette = "Pastel1")  +
-  theme_bw()
-
-ggplot(allDataLong2, aes(x = data, y = summed_Tco2e, fill = name)) +
-  geom_col(colour = "black", position = "stack") +
-  # scale_y_continuous(labels = scales::percent) +
-  scale_fill_brewer(palette = "Pastel1")  +
-  theme_bw()
+###### summed ######
+allDataAnimalsSummed <- allDataAnimals %>%
+  dplyr::select(-rcFid_1km) %>%    # Remove the specified column
+  group_by(data) %>%               # Group by the "data" column
+  summarise(across(everything(), ~ sum(.x, na.rm = TRUE)))  # Sum all other columns, handling NA
+ad2 <- allDataAnimalsSummed %>%
+  mutate(bovine_numbers = rowSums(across(contains("steer") | contains("bull") |
+                                           contains("Continental") | contains("cows") | contains("Upland") |
+                                           contains("Heifers") | contains("dairy") | contains("Lowland")))
+         , .keep = "unused") %>%
+  mutate(ovine_numbers = rowSums(across(contains("rams") | contains("ewes") |
+                                          contains("lamb") | contains("sheep")))
+         , .keep = "unused") %>%
+  mutate(porcine_numbers = rowSums(across(contains("pigs")))
+         , .keep = "unused") %>%
+  rename(poultry_numbers = "total.poultry..c48.")
+# save the table
+fwrite(ad2, file.path("scenario", "results", "animal_comparisons.csv"), row.names = F)

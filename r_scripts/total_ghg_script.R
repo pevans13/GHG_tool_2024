@@ -2911,62 +2911,71 @@ if(part5ManureManagement){
     as.data.frame()
   head(netEnergyTable)
   
-  ##### Tier 1 calculation #####
-  ## ---------- notes ---------- # 
-  ## The IPCC Tier 1 method relies on default emission values based on 
-  ## average temperature of a region, and the livestock 'species'
-  ## --------------------------- # 
-  unique(netEnergyTable$category)
+  ##### 5.0 - table for manure storage fraction / mcf #####
+  ## ------------ Notes --------------  ##
+  ## for MM_table:
+  ##      MCF values are from Brown et al. (2021)
+  ##      EF [emission factors, in g CH4 kg VS-1] are from IPCC (2019), TABLE 10.14
+  ## Stor_frac [storage fraction, based on storage type / Animal Waste Management Systems (%)]
+  ## are from Brown et al. (2021)
+  ## ------------ ----- --------------  ##
   
-  Tier1Manure <- netEnergyTable %>%
-    dplyr::select(animal, category, Weight_Kg) %>%
-    mutate(EF_kgCH4_yr = ifelse(category == "lactating_dairy", 21
-                                , ifelse(grepl("other_cattle|calf|heifer", category), 6
-                                         , ifelse(grepl("pigs", category), 3.5
-                                                  , ifelse(grepl("ewe|sheep|ram", category), 0.19
-                                                           , ifelse(category == "poultry", 1.2     
-                                                                    , NA)))))) %>%
-    mutate(kgVS = ifelse(category == "lactating_dairy", 8.4
-                         , ifelse(grepl("other_cattle|calf|heifer", category), 5.7
-                                  , ifelse(grepl("pigs", category), 4.5
-                                           , ifelse(grepl("ewe|sheep|ram", category), 8.2
-                                                    , ifelse(category == "poultry", 12.3     
-                                                             , NA)))))) %>%
-    mutate(kgVS_yr = kgVS * (Weight_Kg / 1000) * 365) %>%
-    mutate(trial_emiss = kgVS_yr * EF_kgCH4_yr)
+  MM_data <- tibble(
+    factor = c("MCF", "EF"),
+    awms_slurry = c(17, 33.8),            # slurry is liquid in Brown et al. (2021)
+    awms_daily = c(0.1, 0.2),
+    awms_FYM_cows_pigs = c(17, 3.2),      # deep bedding / farmyard manure
+    awms_FYM_sheep = c(2, 3.2),          # deep bedding / farmyard manure
+    awms_past = c(0.08, 1.6),            # pasture / dry lot
+    awms_FYM_poultry = c(0.2, 3.2),      # assumed solid storage
+    awms_anaerobic = c(0.0, 3.2)         # from IPCC (2019)
+  ) %>%
+    # Transpose the table 
+    pivot_longer(-factor, names_to = "management_system", values_to = "value") %>%
+    pivot_wider(names_from = factor, values_from = value)
+  head(MM_data)
   
-  awms_table <- bind_rows(
-    tibble(factor = "system",
-           awms_slurry = 0.60, 
-           awms_solid = 0.09, 
-           awms_past = 0.08, 
-           awms_daily = 0.2),
-    tibble(factor = "EF",
-           awms_slurry = 33.8, 
-           awms_solid = 3.2, 
-           awms_past = 0.2, 
-           awms_daily = 0.2)
-  ) %>% t() %>% as.data.frame()
-  names(awms_table) <- awms_table[1,]
-  awms_table <- awms_table[-1,]
-  # add VS for dairy
-  awms_table$VS <- 5.3
-  # multiply
-  awms_table <- awms_table %>%
-    mutate(ech4kg = (as.numeric(system) * as.numeric(EF) * VS))
-  awms_dairy <- sum(awms_table$ech4)
+  # load in the GE required per day
+  dailyGE <- fread(file.path(savePath, "mjDayGE.csv")) %>%
+    as.data.frame()
+  head(dailyGE)
+  # info from Brown et al. (2021) Table A 3.3.5
+  ## get all unique categories first
+  cats <- unique(dailyGE$category)
+  Stor_frac <- data.frame(category = cats
+                          , awms_slurry = NA
+                          , awms_daily = NA
+                          , awms_past = NA 
+                          , awms_anaerobic = NA
+                          , awms_FYM_poultry = NA
+                          , awms_FYM_cows_pigs = NA
+                          , awms_FYM_sheep = NA) %>%
+    t() %>% as.data.frame()
+  names(Stor_frac) <- Stor_frac[1,]
+  Stor_frac <- Stor_frac[-1,]
+  head(Stor_frac)
+  Stor_frac2 <- Stor_frac %>%
+    mutate(ewes = c(0, 0, 92, 0, 0, 0, 8)
+           , pigs = c(36, 14, 10, 4, 0, 36, 0)
+           , other_cattle = c(18, 12, 48, 1, 0, 21, 0)
+           , calf = c(18, 12, 48, 1, 0, 21, 0)
+           , heifer = c(18, 12, 48, 1, 0, 21, 0)
+           , lactating_dairy = c(60, 8, 22, 2, 0, 9, 0)
+           , other_sheep = c(0, 0, 99, 0, 0, 0, 1)
+           , rams = c(0, 0, 99, 0, 0, 0, 1)
+           , poultry = c(0, 39, 3, 8, 50, 0, 0)
+    ) %>%
+    mutate(management_system = rownames(.))
+  head(Stor_frac2)
 
-  ##### manure characteristics #####
-  ## ---------- notes ---------- # 
-  ## The IPCC Tier 2 method relies on two primary types of inputs that affect the 
-  ## calculation of methane emission factors from manure:
-  ##  manure characteristics: volatile solids (VS) produced in the manure,
-  ##                          and the amount of methane able to be produced from that manure (B0).
-  ##  Animal waste management system characteristics (AWMS; the proportion that that management type composed all manure):
-  ##                          Includes the types of systems used to manage manure 
-  ##                          and a system-specific methane conversion factor (MCF)
-  ## The latter reflects the portion of B0 that is achieved
-  ## --------------------------- # 
+  # merge, to get all info
+  MMStorage <- Stor_frac2 %>%
+    pivot_longer(!c(management_system)
+                 , names_to = "category", values_to = "awms_pc") %>%
+    merge(., MM_data)
+  head(MMStorage)
+  lStor_frac2 <- MMStorage %>%
+    filter(category == "lactating_dairy")
   
   ###### 5a - volatile solids (VS) ######
   ## ---------- notes ---------- # 
@@ -3105,6 +3114,66 @@ if(part5ManureManagement){
     summarise(across(where(is.numeric), ~ mean(.x, na.rm = TRUE))) %>%
     mutate(across(where(is.numeric), ~ ifelse(. > lowerMin & . < UpperMax, 1, 0)))
   
+  ###### 5b - per-animal volatile solids (VS) ######
+  ## ------------ Notes --------------  ##
+  ## this final output will be based upon the scenario of DE written in the 
+  ## '0 - select animal scenario' section above
+  ## ------------ ----- --------------  ##
+  
+  # stop("before VS summary")
+  # set names to keep
+  insideName <- paste0("kgVSdayhoused_", DEinside)
+  outsideName <- paste0("kgVSdaysml_", DEoutside)
+  cat("inside value =", insideName, "|", "outside value =", outsideName, "\n")
+  
+  VStableScen <- VStable %>%
+    dplyr::select(animal, category, UK.Region
+                  , (all_of(c(insideName)))
+                  , (all_of(c(outsideName)))) %>%
+    rename("kgVSdayIn" = insideName
+           , "kgVSdayOut" = outsideName) %>%
+    # get the 12-month value of least, most realistic, DE
+    mutate(kgVSyr = kgVSdayOut * (365)) %>%
+    dplyr::select(-c(kgVSdayIn, kgVSdayOut))
+  head(VStableScen)
+  
+  ## for dairy cattle, change VS to 5.3 VS day-1 animal-1, to match most recent inventory
+  VStableScen <- VStableScen %>%
+    mutate(kgVSyr = ifelse(category == "lactating_dairy", 5.3 * 365, kgVSyr))
+  head(VStableScen)
+  
+  ##### Tier 1 calculation #####
+  ## ---------- notes ---------- # 
+  ## The IPCC Tier 1 method relies on default emission values based on 
+  ## average temperature of a region, and the livestock 'species'
+  ## it also  requires VS, and fraction of manure management type
+  ## --------------------------- # 
+  Tier1Manure <- VStableScen %>%
+    # get yearly VS, in kg
+    dplyr::select(animal, category, UK.Region, kgVSyr) %>%
+    merge(MMStorage)
+  head(Tier1Manure)
+  
+  # VS * AMWS (fraction) * EF
+  Tier1Manure_perAnimal <- Tier1Manure %>%
+    mutate(ch4kg_yr = (kgVSyr/365) * (awms_pc/100) * EF) %>%
+    # sum all types of management
+    group_by(category, animal, UK.Region) %>%
+    summarise(ch4kg_yr = sum(ch4kg_yr))
+  head(Tier1Manure_perAnimal)
+  
+  ##### manure characteristics #####
+  ## ---------- notes ---------- # 
+  ## The IPCC Tier 2 method relies on two primary types of inputs that affect the 
+  ## calculation of methane emission factors from manure:
+  ##  manure characteristics: volatile solids (VS) produced in the manure,
+  ##                          and the amount of methane able to be produced from that manure (B0).
+  ##  Animal waste management system characteristics (AWMS; the proportion that that management type composed all manure):
+  ##                          Includes the types of systems used to manage manure 
+  ##                          and a system-specific methane conversion factor (MCF)
+  ## The latter reflects the portion of B0 that is achieved
+  ## --------------------------- # 
+  
   # save tables
   # average VS per day
   fwrite(VStable, file.path(savePath, "dailyVS.csv"), row.names = F)
@@ -3133,33 +3202,6 @@ if(part5ManureManagement){
   
   sink(file = NULL)
   
-  ###### 5b - per-animal volatile solids (VS) ######
-  ## ------------ Notes --------------  ##
-  ## this final output will be based upon the scenario of DE written in the 
-  ## '0 - select animal scenario' section above
-  ## ------------ ----- --------------  ##
-  
-  # stop("before VS summary")
-  
-  # set names to keep
-  insideName <- paste0("kgVSdayhoused_", DEinside)
-  outsideName <- paste0("kgVSdaysml_", DEoutside)
-  cat("inside value =", insideName, "|", "outside value =", outsideName, "\n")
-  
-  VStableScen <- VStable %>%
-    dplyr::select(animal, category, UK.Region
-                  , (all_of(c(insideName)))
-                  , (all_of(c(outsideName)))) %>%
-    rename("kgVSdayIn" = insideName
-           , "kgVSdayOut" = outsideName) %>%
-    # get the 12-month value of least, most realistic, DE
-    mutate(kgVSyr = kgVSdayOut * (365))
-  head(VStableScen)
-  
-  ## for dairy cattle, change VS to 5.3 VS day-1 animal-1, to match most recent inventory
-  VStableScen <- VStableScen %>%
-    mutate(kgVSyr = ifelse(category == "lactating_dairy", 5.3*365, kgVSyr))
-  
   ###### 5c - B0 (maximum methane producing capacity) ######
   ## ---------- notes ---------- # 
   ## Default B0 values are used from IPCC (2019) Table 10.16
@@ -3176,179 +3218,72 @@ if(part5ManureManagement){
                                                       , if_else(grepl("ewes|rams|lambs|other_sheep", category) , 0.19 
                                                                 , if_else(category == "poultry", 0.30
                                                                           , 0)))))))
+  head(VStableScen)
   
-  ###### 5d - AWMS ######
+  ##### Tier 2 calculation #####
+  # stop("before tier 2")
   ## ---------- notes ---------- # 
-  ## AWMS(T,S,k) = fraction of livestock category T's manure handled using animal 
-  ## waste management system S in climate region k.
-  ## k, the climate region, is always considered 'Cool Temperate Moist' as the data 
-  ## are for the UK
-  ## T and S change
-  
-  ## values for the AWMS were extracted from Table 10.14 in IPCC (2019)
+  ## The IPCC Tier 2 [using VS of 5.3 for lactating cows]
   ## --------------------------- # 
+  head(Tier1Manure)
   
-  # determine the type of management that is used for different animals manure
-  # this is based on the table of Brown et al. (2021), specifically Table A 3.3.5
-  awmsTable <- as.data.frame(cbind(category2 = c("lactating_dairy|pregnant|heifer", "other_cattle|calf", "pigs"
-                                                 , "ewes", "rams", "lambs|other_sheep", "horse", "poultry")
-                                   , liquid = c(60, 18, 36, rep(0, 5))
-                                   , daily_spread = c(8, 12, 14, rep(0, 4), 39)
-                                   , FYM_manure = c(9, 21, 36, 8, 1, 1, 30, 50)
-                                   , pasture_range_paddock = c(22, 48, 10, 92, 99, 99, 70, 3)
-                                   , anaerobic_digest_biogas = c(2, 1, 4, 0, 0, 0, 0, 8))) %>%
-    mutate(across(.cols = c(2:6), .fns = as.numeric)) %>%
-    # get sum of all parts
-    mutate(total = rowSums(across(where(is.numeric)))) %>%
-    # convert all columns to fractions of the whole
-    mutate(across(.cols = c(2:6), ~ ./total)) %>%
-    # remove total
-    dplyr::select(-total)
-  head(awmsTable)
+  # AMWS (fraction) * MCF (fraction)
+  Tier2Manure_perAnimal <- Tier1Manure %>%
+    mutate(mcfXawms = (awms_pc/100) * (MCF/100)) %>%
+  # sum all types of management
+    group_by(category, animal, UK.Region) %>%
+    summarise(sumAwmsMcf = sum(mcfXawms)) %>%
+
+    ## ---------- notes ---------- # 
+    ## This next part uses the equation 10.23 in IPCC (2019)
+    ## It assumes that the different management systems correspond to Table A 3.3.5 in Brown et al. (2021)
+    ## --------------------------- # 
+    
+    # multiply by b0 and conversion (0.67) %>%
+    merge(., VStableScen) %>%
+    mutate(b0conv = sumAwmsMcf * 0.67 * B0) %>%
+    # multiply by VS (yearly)
+    mutate(ch4kg_yr = b0conv * kgVSyr)
+  head(Tier2Manure_perAnimal)
   
-  # manipulate the awms table to create more rows where different categories encompassed
-  # different animal groups
-  awms2 <- awmsTable %>%
-    mutate(divides = str_count(category2, "\\|")) %>%
-    rowwise() %>%
-    slice(rep(1:n(), each = divides+1)) %>%
-    group_by(category2) %>%
-    mutate(Code_n = make.unique(as.character(category2))) %>%
-    # get unique code as an index
-    # filter(grepl("\\.", Code_n)) %>%
-    mutate(x2 = gsub(".*\\.", "\\1", Code_n)) %>%
-    ungroup() %>%
-    rowwise() %>%
-    mutate(x = list(str_split(Code_n, "\\|", simplify = TRUE)[, (as.numeric(x2) + 1)])) %>%
-    mutate(x = gsub("^(.+)\\..*", "\\1", x)) %>%
-    # correct the category
-    mutate(category2 = if_else(is.na(x), str_remove(category2, "\\|.*")
-                               , x)) %>%
-    dplyr::select(-c(divides, Code_n, x2, x)) 
-  rm(awmsTable)
-  print(awms2)
-  
-  ###### 5e - methane conversion factors (MCFs) ######
-  # Table A 3.3.3 in Brown et al. (2021)
-  # except 'Anaerobic digestion', which was taken from IPCC (2019)
-  # NOTE: these values are specific to the UK
-  mcfTable <- rbind(liquid = 17
-                    , daily_spread = 0.1
-                    , FYM_bovine_porcine = 17
-                    , FYM_ovine = 2
-                    , pasture_range_paddock = 1
-                    , poultry_manure = 1.5
-                    , anaerobic_digest_biogas = mean(c(1, 1.41, 3.55, 9.59, 10.85, 12.14)))
-  # divide by 100
-  mcfTable <- mcfTable / 100
-  head(mcfTable)
-  
-  # convert the specific manure ones to the specific manure groups
-  VStableScenMM <- VStableScen %>%
-    mutate(mcf_FYM_manure = if_else(grepl("lactating_dairy|pregnant|heifer|other_cattle|calf|pigs", category) , mcfTable[3,1]
-                                    , if_else(category == "poultry", mcfTable[6,1]
-                                              , if_else(grepl("ewes|rams|lambs|other_sheep|horse", category) , mcfTable[4,1] 
-                                                        , 0)))
-           # add the others (i.e. non-manure ones)
-           , mcf_liquid = mcfTable[1,1]
-           , mcf_daily_spread = mcfTable[2,1]
-           , mcf_pasture = mcfTable[5,1]
-           , mcf_digest = mcfTable[7,1])
-  
-  head(VStableScenMM)
-  
-  # ensure both AWMS and mcf tables are in the same order in terms of manure management type
-  ## merge using category 
-  VStableScenMM <- VStableScenMM %>%
-    relocate(mcf_liquid, mcf_daily_spread, mcf_FYM_manure, mcf_pasture, mcf_digest) %>%
-    merge(., awms2
-          , by.x = "category"
-          , by.y = "category2"
-          , all = F)
-  head(VStableScenMM)
-  
-  ## extract both mcfs and awms
-  ### mcfs
-  aaMcf <- VStableScenMM %>%
-    dplyr::select(contains("mcf_"))
-  ### awms
-  aaAWMS <- VStableScenMM %>%
-    dplyr::select(liquid:anaerobic_digest_biogas)
-  
-  ## multiply together
-  ## ---------- notes ---------- # 
-  ## This next part will give the right side of equation 10.23 in IPCC (2019)
-  ## It assumes that the different management systems correspond to Table A 3.3.5 in Brown et al. (2021)
-  ## The left side will be determined by using previously-derived VS, which itself depends on DE%
-  ## --------------------------- # 
-  summedMcfAwms <- as.data.frame(aaMcf * aaAWMS) %>%
-    mutate(total = rowSums(.[])) %>%
-    # add categories back in
-    bind_cols(VStableScenMM %>% dplyr::select(category, animal, UK.Region, B0), .) %>%
-    # multiply the total summed by B0
-    mutate(EF_right = total * B0)
-  head(summedMcfAwms)
+  ## ------------ Notes --------------  ##
+  ## testing bit
+  ccc <- Tier1Manure %>%
+    mutate(mcfXawms = (awms_pc/100) * (MCF/100)) %>%
+    # sum all types of management
+    group_by(category, animal, UK.Region) %>%
+    filter(category == "lactating_dairy") %>%
+    filter(management_system %in% c("awms_anaerobic", "awms_past", "awms_FYM_cows_pigs"
+                                    , "awms_daily", "awms_slurry"))
+  ## ------------ ----- --------------  ##
   
   ## ---------- notes ---------- # 
   ## now the VS table is used to multiply the values obtained above
   ## first daily CH4 from manure management will be obtained, with the amount  
   ## then be multiplied by 365 to get yearly values
   ## --------------------------- # 
-  # ensure that rows completely match first
-  ## reorganise so it matches previous animal categories
-  x <- match(paste(VStable$category, VStable$animal, VStable$UK.Region)
-             , paste(summedMcfAwms$category, summedMcfAwms$animal, summedMcfAwms$UK.Region))
-  # reorder by the index
-  VStable <- VStable[order(x), ]
-  # check
-  stopifnot(summedMcfAwms$animal == VStable$animal)
-  
-  # select just the VS values from the inside proportion, otherwise manure is left on-field
-  VSonly <- VStable %>%
-    dplyr::select((all_of(insideName))) %>%
-    rename("kgVSdayIn" = insideName) 
-  head(VSonly)
-  
-  # multiply the 'right side' calculation by each VS
-  dailyMMCH4 <- as.data.frame(summedMcfAwms$EF_right * VSonly)
-  # rename
-  names(dailyMMCH4) <- gsub("kgVSday", "MMkgCHday", names(dailyMMCH4))
-  head(dailyMMCH4)
-  
-  # get 6-monthly data
-  sixMonthMMCH4 <- as.data.frame(dailyMMCH4 * (365 / 2)) %>%
-    # add animal info back in
-    bind_cols(VStable %>% select(animal, category, UK.Region), .)
-  # rename
-  names(sixMonthMMCH4) <- gsub("MMkgCHday", "MMkgCH6Mn", names(sixMonthMMCH4))
-  head(sixMonthMMCH4)
   
   # get means for all of the same animal, category
-  summariseCH <- sixMonthMMCH4 %>%
-    filter(grepl("dairy", category)| grepl("dairy", animal) & category != "calf") %>%
+  summariseCH <- Tier2Manure_perAnimal %>%
     group_by(animal, category) %>%
-    dplyr::summarise(across(starts_with("MMkgCH6"), list(mean = ~ mean(., na.rm = TRUE)
+    dplyr::summarise(across(starts_with("ch4kg_yr"), list(mean = ~ mean(., na.rm = TRUE)
                                                          , min = ~ min(., na.rm = TRUE)
                                                          , max = ~ max(., na.rm = TRUE))))
   head(summariseCH)
   
   ###### 5f - convert CH4 to CO2e ######
   # convert to CO2e (non-fossil fuel: 28)
-  sixMonthMMCO2e <- sixMonthMMCH4 %>%
-    mutate(across(where(is.numeric), ~ . * gwpCH4))
-  # rename
-  names(sixMonthMMCO2e) <- gsub("MMkgCH", "MMkgCO2e", names(sixMonthMMCO2e))
-  head(sixMonthMMCO2e)
+  MMCO2e <- Tier2Manure_perAnimal %>%
+    mutate(CO2e_kg_yr = ch4kg_yr * gwpCH4)
+  head(MMCO2e)
   
   # save tables
-  # CH4
-  fwrite(sixMonthMMCH4, file.path(savePath, "sixMonthMMCH4.csv"), row.names = F)
-  # CO2
-  fwrite(sixMonthMMCO2e, file.path(savePath, "sixMonthMMCO2e.csv"), row.names = F)
+  # CH4 and CO2
+  fwrite(MMCO2e, file.path(savePath, "MMCO2e.csv"), row.names = F)
   
   # write readme
   sink(file = NULL)
-  sink(file = file.path(savePath, "readme_sixMonthMM.md"))
+  sink(file = file.path(savePath, "readme_MMCO2e.md"))
   cat("Creator: Dr. Paul M. Evans (paueva@ceh.ac.uk) | Git: https://github.com/pevans13
   Date created: 2023-07-13
   Last update:",  format(Sys.Date()), "
@@ -3356,18 +3291,17 @@ if(part5ManureManagement){
   The files show the calculated amount of emissions from manure management per animals, per six months, to do with the animals' situations i.e. the quality of their diet, and their freedom of moved (e.g. housed, or allowed to roam)  
   
   Files:
-    sixMonthMMCH4.csv
-    sixMonthMMCO2e.csv
+    MMCO2e.csv
   
-  Columns of 'sixMonthMM' files:
+  Columns of 'MMCO2e' file:
       'animal' = the category an animal was assigned to, based on either CTS or AgCensus data
       'category' = the category each animal type was assigned to in this work
       'UK.Region' = different regions of the UK, with 'other' representing non-English regions
-      'MMkg[ghg]6MnIn' = emissions produced of [ghg] from manure management, in kg, per-animal for a six-month stay indoors, based on diet
-          where [ghg] = either CO2e (carbon dioxide equivalent) or CH4 (methane)
+      'CO2e_kg_yr' = annual emissions produced of CO2e (carbon dioxide equivalent) from manure management, in kg, per-animal 
+      'ch4kg_yr' = annual emissions produced of CH4 (methane) from manure management, in kg, per-animal 
           
   Data: per-animal  production
-  units: kg VS per day per animal")
+  units: kg manure management emissions per animal")
   sink(file = NULL)
   
   # tidy
@@ -7839,6 +7773,8 @@ if(part11combineemissions){
   for(iscen in 1:(length(scenarios) + 1)){
     # for(iscen in 1:2){
     
+    # stop("part 11 - combining emissions")
+    
     # get the regions by themselves
     reg <- st_read(file.path("data_in", "animals", "nonBovine_grid_2020_1km.gpkg"), quiet = T) %>% 
       dplyr::select(rcFid_1km, region) %>% st_drop_geometry()
@@ -7939,14 +7875,14 @@ if(part11combineemissions){
     #### 11c - manure management ####
     cat("   ...starting manure management...\n")
     # load in manure management - a per-animal emission value - it is a value for 6 months (indoors)
-    manMgmt <- fread(file.path("results", "animals", "sixMonthMMCO2e.csv"))
+    manMgmt <- fread(file.path("results", "animals", "MMCO2e.csv"))
     head(manMgmt)
     
     # run through the transposing multiplication function
     totalmanMgmt <- regionsTranspose(griddf = gridAnimals
                                      , rSel = manMgmt
                                      , finalCol = "kgCO2e_manMgmt"
-                                     , colofInterest = "MMkgCO2e6MnIn")
+                                     , colofInterest = "CO2e_kg_yr")
     head(totalmanMgmt)
     
     ###### add to final dataframe ######
